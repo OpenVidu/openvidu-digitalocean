@@ -88,7 +88,7 @@ resource "digitalocean_reserved_ip" "public_ip" {
 # DigitalOcean Space
 resource "digitalocean_spaces_bucket" "openvidu_space" {
   count  = var.spaceName == "" ? 1 : 0
-  name   = var.spaceName == "" ? "openvidu-appdata" : var.spaceName
+  name   = "openvidu-appdata"
   region = var.spaceRegion
   acl    = "private"
 }

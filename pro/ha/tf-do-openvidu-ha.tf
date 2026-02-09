@@ -423,14 +423,14 @@ resource "digitalocean_droplet_autoscale" "media_node_pool" {
 # DigitalOcean Space
 resource "digitalocean_spaces_bucket" "openvidu_space_appdata" {
   count  = var.spaceAppDataName == "" ? 1 : 0
-  name   = var.spaceAppDataName == "" ? "openvidu-appdata" : var.spaceAppDataName
+  name   = "openvidu-appdata"
   region = var.spaceRegion
   acl    = "private"
 }
 
 resource "digitalocean_spaces_bucket" "openvidu_space_clusterdata" {
   count  = var.spaceClusterDataName == "" ? 1 : 0
-  name   = var.spaceClusterDataName == "" ? "openvidu-clusterdata" : var.spaceClusterDataName
+  name   = "openvidu-clusterdata"
   region = var.spaceRegion
   acl    = "private"
 }
