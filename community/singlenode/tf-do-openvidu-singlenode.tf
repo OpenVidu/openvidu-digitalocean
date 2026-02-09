@@ -1,3 +1,14 @@
+# SSH key
+resource "tls_private_key" "openvidu_ssh_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "digitalocean_ssh_key" "openvidu_ssh_key_do" {
+  name       = "${var.stackName}-ssh-key"
+  public_key = tls_private_key.openvidu_ssh_key.public_key_openssh
+}
+
 # Droplet
 resource "digitalocean_droplet" "openvidu_server" {
   name   = "${var.stackName}-vm-ce"
@@ -5,7 +16,7 @@ resource "digitalocean_droplet" "openvidu_server" {
   region = var.region
   size   = var.instanceType
 
-  ssh_keys  = [var.sshKeyFingerprint]
+  ssh_keys  = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
   user_data = local.user_data
 }
 
@@ -93,6 +104,14 @@ resource "digitalocean_spaces_bucket" "openvidu_space" {
   acl    = "private"
 }
 
+resource "digitalocean_spaces_key" "openvidu_space_key" {
+  name = "${var.stackName}-space-key"
+  grant {
+    bucket     = var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName
+    permission = "readwrite"
+  }
+}
+
 locals {
   install_script = <<-EOF
 #!/bin/bash -x
@@ -100,23 +119,10 @@ set -e
 
 OPENVIDU_VERSION=main
 DOMAIN=
-YQ_VERSION=v4.44.5
 echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
 
 # Install dependencies
-apt-get update && apt-get install -y \
-  curl \
-  unzip \
-  jq \
-  wget \
-  ca-certificates \
-  gnupg \
-  lsb-release \
-  openssl
-
-# Install yq
-wget https://github.com/mikefarah/yq/releases/download/$${YQ_VERSION}/yq_linux_amd64.tar.gz -O - |\
-tar xz && mv yq_linux_amd64 /usr/bin/yq
+apt-get update && apt-get install -y
 
 # Create counter file for tracking script executions
 echo 1 > /usr/local/bin/openvidu_install_counter.txt
@@ -171,7 +177,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/community/singlenode/$OP
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on-premises"
+  "--environment=on_premise"
   "--deployment-type=single_node"
   "--domain-name=$DOMAIN"
   "--enabled-modules='$ENABLED_MODULES'"
@@ -245,8 +251,8 @@ CONFIG_DIR="$${INSTALL_DIR}/config"
 
 
 # Get DigitalOcean Spaces access keys from environment or metadata
-EXTERNAL_S3_ACCESS_KEY="${var.spaces_access_key}"
-EXTERNAL_S3_SECRET_KEY="${var.spaces_secret_key}"
+EXTERNAL_S3_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+EXTERNAL_S3_SECRET_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
 
 # Config S3 bucket
 EXTERNAL_S3_ENDPOINT="https://${var.spaceRegion}.digitaloceanspaces.com"
@@ -538,10 +544,42 @@ CONFIG_S3_EOF
   chmod +x /usr/local/bin/config_s3.sh
 
   echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
-  apt-get update && apt-get install -y
+  apt-get update && apt-get install -y \
+  curl \
+  unzip \
+  jq \
+  wget \
+  ca-certificates \
+  gnupg \
+  lsb-release \
+  openssl
+
+  # Install aws-cli
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip"
+  unzip -qq awscliv2.zip
+  ./aws/install
+  rm -rf awscliv2.zip aws
 
   export HOME="/root"
+ 
+  export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+  export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
+  export AWS_DEFAULT_REGION="${var.spaceRegion}"
+
+  # Save private key to file
+  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key.pem
+  chmod 600 /tmp/openvidu_ssh_key.pem
   
+  # Upload private key to the bucket
+  aws s3 cp /tmp/openvidu_ssh_key.pem \
+  s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/openvidu_ssh_key.pem \
+  --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
+  --acl private \
+  --region=${var.spaceRegion}
+  
+  # Clean up
+  rm -f /tmp/openvidu_ssh_key.pem
+
   # Install OpenVidu
   /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu"; exit 1; }
   

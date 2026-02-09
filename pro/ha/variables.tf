@@ -141,11 +141,6 @@ variable "volumeSize" {
   default     = 100
 }
 
-variable "sshKeyFingerprint" {
-  description = "SSH key fingerprint from DigitalOcean. You can get it from the DigitalOcean console under Settings > Security > SSH Keys"
-  type        = string
-}
-
 variable "spaceAppDataName" {
   description = "Name for the DigitalOcean Space (S3-compatible bucket). If not provided, no Space will be created."
   type        = string
@@ -162,15 +157,4 @@ variable "spaceRegion" {
   description = "Region for the DigitalOcean Space. Common values: nyc3, ams3, sgp1, sfo3"
   type        = string
   default     = "ams3"
-}
-
-variable "spaces_secret_key" {
-  description = "Secret key for the DigitalOcean Space."
-  type        = string
-  sensitive   = true
-}
-
-variable "spaces_access_key" {
-  description = "Access key for the DigitalOcean Space."
-  type        = string
 }

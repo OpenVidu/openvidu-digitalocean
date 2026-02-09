@@ -384,6 +384,18 @@ resource "digitalocean_loadbalancer" "openvidu_lb" {
 
 # --------------------- droplets -----------------------
 
+# SSH key
+resource "tls_private_key" "openvidu_ssh_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "digitalocean_ssh_key" "openvidu_ssh_key_do" {
+  name       = "${var.stackName}-ssh-key"
+  public_key = tls_private_key.openvidu_ssh_key.public_key_openssh
+}
+
+
 # Master Node
 resource "digitalocean_droplet" "openvidu_master_node" {
   count  = 4
@@ -392,7 +404,7 @@ resource "digitalocean_droplet" "openvidu_master_node" {
   region = var.region
   size   = var.masterNodeInstanceType
 
-  ssh_keys = [var.sshKeyFingerprint]
+  ssh_keys = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
   vpc_uuid = digitalocean_vpc.openvidu_vpc.id
   tags     = [digitalocean_tag.master_node_tag.name]
 
@@ -412,7 +424,7 @@ resource "digitalocean_droplet_autoscale" "media_node_pool" {
     region    = var.region
     image     = "ubuntu-24-04-x64"
     tags      = [digitalocean_tag.media_node_tag.name]
-    ssh_keys  = [var.sshKeyFingerprint]
+    ssh_keys  = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
     user_data = local.user_data_media
     vpc_uuid  = digitalocean_vpc.openvidu_vpc.id
   }
@@ -433,6 +445,15 @@ resource "digitalocean_spaces_bucket" "openvidu_space_clusterdata" {
   name   = "openvidu-clusterdata"
   region = var.spaceRegion
   acl    = "private"
+}
+
+
+resource "digitalocean_spaces_key" "openvidu_spaces_key" {
+  name = "${var.stackName}-spaces-key"
+  grant {
+    bucket     = ""
+    permission = "fullaccess"
+  }
 }
 
 
@@ -685,8 +706,8 @@ CLUSTER_CONFIG_DIR="$${INSTALL_DIR}/config/cluster"
 
 
 # Get DigitalOcean Spaces access keys from environment or metadata
-EXTERNAL_S3_ACCESS_KEY="${var.spaces_access_key}"
-EXTERNAL_S3_SECRET_KEY="${var.spaces_secret_key}"
+EXTERNAL_S3_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
+EXTERNAL_S3_SECRET_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
 
 # Config S3 bucket
 EXTERNAL_S3_ENDPOINT="https://${var.spaceRegion}.digitaloceanspaces.com"
@@ -1064,9 +1085,23 @@ CONFIG_S3_EOF
 
   doctl auth init -t "${var.do_token}"
 
-  export AWS_ACCESS_KEY_ID="${var.spaces_access_key}"
-  export AWS_SECRET_ACCESS_KEY="${var.spaces_secret_key}"
+  export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
+  export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
   export AWS_DEFAULT_REGION="${var.spaceRegion}"
+
+  # Save private key to file
+  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key.pem
+  chmod 600 /tmp/openvidu_ssh_key.pem
+  
+  # Upload private key to the bucket
+  aws s3 cp /tmp/openvidu_ssh_key.pem \
+  s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/openvidu_ssh_key.pem \
+  --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
+  --acl private \
+  --region=${var.spaceRegion}
+  
+  # Clean up
+  rm -f /tmp/openvidu_ssh_key.pem
 
   # Add route to load balancer
   LB_IP=$(doctl compute load-balancer list --format IP --no-header | grep -v "^$" | head -n1)
@@ -1144,8 +1179,8 @@ echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
 apt-get update && apt-get install -y
 
 # Get secret from s3 bucket with active wait
-export AWS_ACCESS_KEY_ID="${var.spaces_access_key}"
-export AWS_SECRET_ACCESS_KEY="${var.spaces_secret_key}"
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
 export AWS_DEFAULT_REGION="${var.spaceRegion}"
 mkdir -p /opt/openvidu
 

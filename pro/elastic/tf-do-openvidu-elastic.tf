@@ -208,6 +208,17 @@ resource "digitalocean_firewall" "master_to_media_firewall" {
 
 # --------------------- droplets -----------------------
 
+# SSH key
+resource "tls_private_key" "openvidu_ssh_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "digitalocean_ssh_key" "openvidu_ssh_key_do" {
+  name       = "${var.stackName}-ssh-key"
+  public_key = tls_private_key.openvidu_ssh_key.public_key_openssh
+}
+
 # Master Node
 resource "digitalocean_droplet" "openvidu_master_node" {
   name   = "${var.stackName}-master-node"
@@ -215,7 +226,7 @@ resource "digitalocean_droplet" "openvidu_master_node" {
   region = var.region
   size   = var.masterNodeInstanceType
 
-  ssh_keys = [var.sshKeyFingerprint]
+  ssh_keys = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
   vpc_uuid = digitalocean_vpc.openvidu_vpc.id
   tags     = ["openvidu", var.stackName, "master-node"]
 
@@ -245,7 +256,7 @@ resource "digitalocean_droplet_autoscale" "media_node_pool" {
     region    = var.region
     image     = "ubuntu-24-04-x64"
     tags      = [digitalocean_tag.media_node_tag.name]
-    ssh_keys  = [var.sshKeyFingerprint]
+    ssh_keys  = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
     user_data = local.user_data_media
     vpc_uuid  = digitalocean_vpc.openvidu_vpc.id
   }
@@ -259,6 +270,14 @@ resource "digitalocean_spaces_bucket" "openvidu_space" {
   name   = "openvidu-appdata"
   region = var.spaceRegion
   acl    = "private"
+}
+
+resource "digitalocean_spaces_key" "openvidu_space_key" {
+  name = "${var.stackName}-space-key"
+  grant {
+    bucket     = var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName
+    permission = "readwrite"
+  }
 }
 
 locals {
@@ -336,7 +355,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/elastic/$OPENVIDU_VE
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on-premises"
+  "--environment=on_premise"
   "--deployment-type=elastic"
   "--node-role=master-node"
   "--openvidu-pro-license=$OPENVIDU_PRO_LICENSE"
@@ -409,8 +428,8 @@ CLUSTER_CONFIG_DIR="$${INSTALL_DIR}/config/cluster"
 
 
 # Get DigitalOcean Spaces access keys from environment or metadata
-EXTERNAL_S3_ACCESS_KEY="${var.spaces_access_key}"
-EXTERNAL_S3_SECRET_KEY="${var.spaces_secret_key}"
+EXTERNAL_S3_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+EXTERNAL_S3_SECRET_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
 
 # Config S3 bucket
 EXTERNAL_S3_ENDPOINT="https://${var.spaceRegion}.digitaloceanspaces.com"
@@ -869,9 +888,23 @@ CONFIG_S3_EOF
 
   doctl auth init -t "${var.do_token}"
 
-  export AWS_ACCESS_KEY_ID="${var.spaces_access_key}"
-  export AWS_SECRET_ACCESS_KEY="${var.spaces_secret_key}"
+  export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+  export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
   export AWS_DEFAULT_REGION="${var.spaceRegion}"
+  
+  # Save private key to file
+  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key.pem
+  chmod 600 /tmp/openvidu_ssh_key.pem
+  
+  # Upload private key to the bucket
+  aws s3 cp /tmp/openvidu_ssh_key.pem \
+  s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/openvidu_ssh_key.pem \
+  --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
+  --acl private \
+  --region=${var.spaceRegion}
+  
+  # Clean up
+  rm -f /tmp/openvidu_ssh_key.pem
 
   # Install OpenVidu
   /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu"; exit 1; }
@@ -908,8 +941,8 @@ echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
 apt-get update && apt-get install -y
 
 # Get secret from s3 bucket with active wait
-export AWS_ACCESS_KEY_ID="${var.spaces_access_key}"
-export AWS_SECRET_ACCESS_KEY="${var.spaces_secret_key}"
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
 export AWS_DEFAULT_REGION="${var.spaceRegion}"
 mkdir -p /opt/openvidu
 
@@ -953,7 +986,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/elastic/$OPENVIDU_VE
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on-premises"
+  "--environment=on_premise"
   "--deployment-type=elastic"
   "--node-role=media-node"
   "--master-node-private-ip=$MASTER_NODE_PRIVATE_IP"
