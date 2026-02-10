@@ -1,0 +1,75 @@
+# =================================================================
+#  REQUIRED CONFIGURATION
+#  You must fill in these variables for the deployment to work.
+# =================================================================
+
+# Your DigitalOcean API Token.
+# You can generate it at: https://cloud.digitalocean.com/account/api
+do_token = "put_your_digitalocean_token_here"
+
+# Name to identify your deployment (e.g., "openvidu-singlenode").
+stackName = "openvidu-singlenode"
+
+# =================================================================
+#  OPTIONAL CONFIGURATION
+#  Uncomment (remove the #) only if you need to change the default value.
+# =================================================================
+
+# --- Region and Server ---
+
+# Region where the server will be created. Default: ams3 (Amsterdam).
+# Popular options: nyc1, sfo2, fra1, lon1.
+# Leave commented to use the default
+# region = "ams3"
+
+# Server size (Droplet). Default: s-4vcpu-8gb.
+# Leave commented to use the default
+# instanceType = "s-4vcpu-8gb"
+
+
+# --- Domain and SSL Certificates ---
+
+# Certificate type. Default: "letsencrypt".
+# Options: 
+#   - "letsencrypt" (Recommended for production, requires domain or uses sslip.io).
+#   - "selfsigned"  (For local testing only, browser will show warning).
+#   - "owncert"     (If you already have your own certificate files).
+# Leave commented to use the default
+# certificateType = "letsencrypt"
+
+# Your real domain name (e.g., "mycompany.com").
+# Required if using 'owncert'. Recommended for 'letsencrypt'.
+# Leave empty or commented if you want to use an automatic sslip.io domain.
+# domainName = "video.mycompany.com"
+
+# Only if using 'owncert': Content of the public certificate and private key.
+# ownPublicCertificate  = "url_to_your_public_certificate.pem"
+# ownPrivateCertificate = "url_to_your_private_certificate.pem"
+
+
+# --- Security and Access ---
+
+# Password for the meet admin user. 
+# If left empty or commented, a random one will be generated and displayed at the end (terraform output).
+# initialMeetAdminPassword = "YourSecurePassword123"
+
+# Initial API Key.
+# If left empty or commented, no initial key will be configured.
+# initialMeetApiKey = "YourSecretApiKey"
+
+
+# --- Storage (DigitalOcean Spaces) ---
+
+# Bucket (Space) name for recordings. 
+# If left empty or commented, a default bucket will be created with openvidu-appdata name configured.
+# spaceName = "my-recordings-bucket"
+
+# Space region (can be different from the Droplet region).
+# spaceRegion = "ams3"
+
+
+# --- Advanced Extra ---
+
+# Extra flags for the installer.
+# additionalInstallFlags = "--flag1=value"
+
