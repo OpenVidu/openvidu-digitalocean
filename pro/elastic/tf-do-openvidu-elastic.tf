@@ -466,6 +466,11 @@ EOF
   update_config_from_secret_script_master = <<-EOF
 #!/bin/bash
 set -e
+
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
+export AWS_DEFAULT_REGION="${var.spaceRegion}"
+
 INSTALL_DIR="/opt/openvidu"
 CLUSTER_CONFIG_DIR="$${INSTALL_DIR}/config/cluster"
 MASTER_NODE_CONFIG_DIR="$${INSTALL_DIR}/config/node"
@@ -619,6 +624,10 @@ EOF
   store_secret_script_master = <<-EOF
 #!/bin/bash
 set -e
+
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
+export AWS_DEFAULT_REGION="${var.spaceRegion}"
 
 # Modes: generate, save, fullsave
 # save mode: save the provided value in secrets.env and return it
@@ -888,18 +897,18 @@ CONFIG_S3_EOF
   export AWS_DEFAULT_REGION="${var.spaceRegion}"
   
   # Save private key to file
-  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key.pem
-  chmod 600 /tmp/openvidu_ssh_key.pem
+  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key_elastic.pem
+  chmod 600 /tmp/openvidu_ssh_key_elastic.pem
   
   # Upload private key to the bucket
-  aws s3 cp /tmp/openvidu_ssh_key.pem \
-  s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/openvidu_ssh_key.pem \
+  aws s3 cp /tmp/openvidu_ssh_key_elastic.pem \
+  s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/openvidu_ssh_key_elastic.pem \
   --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
   --acl private \
   --region=${var.spaceRegion}
   
   # Clean up
-  rm -f /tmp/openvidu_ssh_key.pem
+  rm -f /tmp/openvidu_ssh_key_elastic.pem
 
   # Install OpenVidu
   /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu"; exit 1; }
