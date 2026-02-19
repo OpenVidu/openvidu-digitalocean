@@ -230,14 +230,9 @@ elif [[ "${var.certificateType}" == "letsencrypt" ]]; then
     "--certificate-type=letsencrypt"
   )
 else
-  # Download owncert files
-  mkdir -p /tmp/owncert
-  wget -O /tmp/owncert/fullchain.pem ${var.ownPublicCertificate}
-  wget -O /tmp/owncert/privkey.pem ${var.ownPrivateCertificate}
-
-  # Convert to base64
-  OWN_CERT_CRT=$(base64 -w 0 /tmp/owncert/fullchain.pem)
-  OWN_CERT_KEY=$(base64 -w 0 /tmp/owncert/privkey.pem)
+  # Use base64 encoded certificates directly
+  OWN_CERT_CRT=${var.ownPublicCertificate}
+  OWN_CERT_KEY=${var.ownPrivateCertificate}
   CERT_ARGS=(
     "--certificate-type=owncert"
     "--owncert-public-key=$OWN_CERT_CRT"
@@ -582,18 +577,18 @@ CONFIG_S3_EOF
   export AWS_DEFAULT_REGION="${var.spaceRegion}"
 
   # Save private key to file
-  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key.pem
-  chmod 600 /tmp/openvidu_ssh_key.pem
+  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key_snpro.pem
+  chmod 600 /tmp/openvidu_ssh_key_snpro.pem
   
   # Upload private key to the bucket
-  aws s3 cp /tmp/openvidu_ssh_key.pem \
-  s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/openvidu_ssh_key.pem \
+  aws s3 cp /tmp/openvidu_ssh_key_snpro.pem \
+  s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/openvidu_ssh_key_snpro.pem \
   --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
   --acl private \
   --region=${var.spaceRegion}
   
   # Clean up
-  rm -f /tmp/openvidu_ssh_key.pem
+  rm -f /tmp/openvidu_ssh_key_snpro.pem
   
   # Install OpenVidu
   /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu"; exit 1; }
