@@ -36,13 +36,13 @@ variable "domainName" {
 }
 
 variable "ownPublicCertificate" {
-  description = "If certificate type is 'owncert', this parameter will be used to specify the public certificate URL"
+  description = "If certificate type is 'owncert', this parameter will be used to specify the public certificate in base64"
   type        = string
   default     = ""
 }
 
 variable "ownPrivateCertificate" {
-  description = "If certificate type is 'owncert', this parameter will be used to specify the private certificate URL"
+  description = "If certificate type is 'owncert', this parameter will be used to specify the private certificate in base64"
   type        = string
   default     = ""
 }
@@ -67,7 +67,7 @@ variable "initialMeetApiKey" {
   }
 }
 
-variable "masterNodeInstanceType" {
+variable "masterNodesInstanceType" {
   description = "Specifies the Droplet size for your OpenVidu Master Node"
   type        = string
   default     = "s-4vcpu-8gb"
@@ -80,9 +80,9 @@ variable "mediaNodeInstanceType" {
 }
 
 variable "fixedNumberOfMediaNodes" {
-  description = "If greater than 0, the number of media nodes will be fixed to this value, disabling autoscaling"
+  description = "If greater than 0, the number of media nodes will be fixed to this value"
   type        = number
-  default     = 2
+  default     = 4
 }
 
 # variable "initialNumberOfMediaNodes" {
@@ -142,13 +142,14 @@ variable "volumeSize" {
 }
 
 variable "spaceAppDataName" {
-  description = "Name for the DigitalOcean Space (S3-compatible bucket). If not provided, no Space will be created."
+
+  description = "Name of the DigitalOcean Space (S3-compatible bucket) to store application data and recordings. If empty, a bucket will be created with default name"
   type        = string
   default     = ""
 }
 
 variable "spaceClusterDataName" {
-  description = "Name for the DigitalOcean Space (S3-compatible bucket). If not provided, no Space will be created."
+  description = "Name of the DigitalOcean Space (S3-compatible bucket) to store cluster data. If empty, a bucket will be created with default name"
   type        = string
   default     = ""
 }

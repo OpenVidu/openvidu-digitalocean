@@ -402,7 +402,7 @@ resource "digitalocean_droplet" "openvidu_master_node" {
   name   = "${var.stackName}-master-node-${count.index + 1}"
   image  = "ubuntu-24-04-x64"
   region = var.region
-  size   = var.masterNodeInstanceType
+  size   = var.masterNodesInstanceType
 
   ssh_keys = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
   vpc_uuid = digitalocean_vpc.openvidu_vpc.id
@@ -746,6 +746,11 @@ EOF
   update_config_from_secret_script_master = <<-EOF
 #!/bin/bash
 set -e
+
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
+export AWS_DEFAULT_REGION="${var.spaceRegion}"
+
 INSTALL_DIR="/opt/openvidu"
 CLUSTER_CONFIG_DIR="$${INSTALL_DIR}/config/cluster"
 MASTER_NODE_CONFIG_DIR="$${INSTALL_DIR}/config/node"
@@ -795,6 +800,10 @@ EOF
   update_secret_from_config_script_master = <<-EOF
 #!/bin/bash
 set -e
+
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
+export AWS_DEFAULT_REGION="${var.spaceRegion}"
 
 # Installation directory
 INSTALL_DIR="/opt/openvidu"
@@ -928,6 +937,10 @@ EOF
   store_secret_script_master = <<-EOF
 #!/bin/bash
 set -e
+
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
+export AWS_DEFAULT_REGION="${var.spaceRegion}"
 
 # Modes: generate, save, fullsave
 # save mode: save the provided value in secrets.env and return it
@@ -1085,18 +1098,18 @@ CONFIG_S3_EOF
   export AWS_DEFAULT_REGION="${var.spaceRegion}"
 
   # Save private key to file
-  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key.pem
-  chmod 600 /tmp/openvidu_ssh_key.pem
+  echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key_ha.pem
+  chmod 600 /tmp/openvidu_ssh_key_ha.pem
   
   # Upload private key to the bucket
-  aws s3 cp /tmp/openvidu_ssh_key.pem \
-  s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/openvidu_ssh_key.pem \
+  aws s3 cp /tmp/openvidu_ssh_key_ha.pem \
+  s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/openvidu_ssh_key_ha.pem \
   --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
   --acl private \
   --region=${var.spaceRegion}
   
   # Clean up
-  rm -f /tmp/openvidu_ssh_key.pem
+  rm -f /tmp/openvidu_ssh_key_ha.pem
 
   # Add route to load balancer
   LB_IP=$(doctl compute load-balancer list --format IP --no-header | grep -v "^$" | head -n1)
