@@ -36,13 +36,13 @@ variable "domainName" {
 }
 
 variable "ownPublicCertificate" {
-  description = "If certificate type is 'owncert', this parameter will be used to specify the public certificate"
+  description = "If certificate type is 'owncert', this parameter will be used to specify the public certificate in base64"
   type        = string
   default     = ""
 }
 
 variable "ownPrivateCertificate" {
-  description = "If certificate type is 'owncert', this parameter will be used to specify the private certificate"
+  description = "If certificate type is 'owncert', this parameter will be used to specify the private certificate in base64"
   type        = string
   default     = ""
 }
@@ -84,7 +84,7 @@ variable "additionalInstallFlags" {
 }
 
 variable "spaceName" {
-  description = "Name for the DigitalOcean Space (S3-compatible bucket). If not provided, no Space will be created."
+  description = "Name of the DigitalOcean Space (S3-compatible bucket) to store application data and recordings. If empty, a bucket will be created with default name"
   type        = string
   default     = ""
 }
