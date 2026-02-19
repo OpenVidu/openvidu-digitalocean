@@ -7,24 +7,41 @@
 # You can generate it at: https://cloud.digitalocean.com/account/api
 do_token = "put_your_digitalocean_token_here"
 
-# Name to identify your deployment (e.g., "openvidu-singlenode").
-stackName = "openvidu-singlenode"
+# Your OpenVidu license PRO.
+# Get it here: https://openvidu.io/account
+openviduLicense = "put_your_openvidu_license_here"
+
+# Name to identify your deployment (e.g., "openvidu-elastic").
+stackName = "openvidu-elastic"
 
 # =================================================================
 #  OPTIONAL CONFIGURATION
 #  Uncomment (remove the #) only if you need to change the default value.
 # =================================================================
 
-# --- Region and Server ---
+# --- Region, Servers and Media Engine ---
 
-# Region where the server will be created. Default: ams3 (Amsterdam).
+# Region where the servers will be created. Default: ams3 (Amsterdam).
 # Popular options: nyc1, sfo2, fra1, lon1.
 # Leave commented to use the default
 # region = "ams3"
 
-# Server size (Droplet). Default: s-4vcpu-8gb.
+# Master Node server size (Droplet). Default: s-4vcpu-8gb.
 # Leave commented to use the default
-# instanceType = "s-4vcpu-8gb"
+# masterNodeInstanceType = "s-4vcpu-8gb"
+
+# Media Node server size (Droplet). Default: s-4vcpu-8gb.
+# Leave commented to use the default
+# mediaNodeInstanceType = "s-4vcpu-8gb"
+
+# Fixed number of Media Nodes. Default: 4.
+# Leave commented to use the default
+# fixedNumberOfMediaNodes = 4
+
+# Media Engine. Default: "pion".
+# Available options: "pion", "mediasoup".
+# Leave commented to use the default
+# rtcEngine = "pion"
 
 
 # --- Domain and SSL Certificates ---
@@ -61,7 +78,7 @@ stackName = "openvidu-singlenode"
 # --- Storage (DigitalOcean Spaces) ---
 
 # Bucket (Space) name for recordings. 
-# If left empty or commented, a default bucket will be created with openvidu-appdata name configured.
+# If left empty or commented a default one will be created.
 # spaceName = "my-recordings-bucket"
 
 # Space region (can be different from the Droplet region).

@@ -51,9 +51,9 @@ stackName = "openvidu-singlenode"
 # Leave empty or commented if you want to use an automatic sslip.io domain.
 # domainName = "video.mycompany.com"
 
-# Only if using 'owncert': Content of the public certificate and private key.
-# ownPublicCertificate  = "url_to_your_public_certificate.pem"
-# ownPrivateCertificate = "url_to_your_private_certificate.pem"
+# Only if using 'owncert': Content of the public certificate and private key in base64.
+# ownPublicCertificate  = "base64_of_your_public_certificate.pem"
+# ownPrivateCertificate = "base64_of_your_private_certificate.pem"
 
 
 # --- Security and Access ---
