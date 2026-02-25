@@ -350,7 +350,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/elastic/$OPENVIDU_VE
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on_premise"
+  "--environment=digitalocean"
   "--deployment-type=elastic"
   "--node-role=master-node"
   "--openvidu-pro-license=$OPENVIDU_PRO_LICENSE"
@@ -990,7 +990,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/elastic/$OPENVIDU_VE
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on_premise"
+  "--environment=digitalocean"
   "--deployment-type=elastic"
   "--node-role=media-node"
   "--master-node-private-ip=$MASTER_NODE_PRIVATE_IP"

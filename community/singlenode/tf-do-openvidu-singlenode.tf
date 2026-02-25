@@ -177,7 +177,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/community/singlenode/$OP
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on_premise"
+  "--environment=digitalocean"
   "--deployment-type=single_node"
   "--domain-name=$DOMAIN"
   "--enabled-modules='$ENABLED_MODULES'"

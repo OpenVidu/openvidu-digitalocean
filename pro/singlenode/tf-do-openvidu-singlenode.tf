@@ -186,7 +186,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/singlenode/$OPENVIDU
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on_premise"
+  "--environment=digitalocean"
   "--deployment-type=single_node_pro"
   "--openvidu-pro-license=$OPENVIDU_PRO_LICENSE"
   "--domain-name=$DOMAIN"

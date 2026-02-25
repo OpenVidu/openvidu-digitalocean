@@ -625,7 +625,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on_premise"
+  "--environment=digitalocean"
   "--deployment-type='ha'"
   "--node-role='master-node'"
   "--external-load-balancer"
@@ -1239,7 +1239,7 @@ INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION
 COMMON_ARGS=(
   "--no-tty"
   "--install"
-  "--environment=on_premise"
+  "--environment=digitalocean"
   "--deployment-type=ha"
   "--node-role=media-node"
   "--master-node-private-ip-list=$MASTER_NODE_PRIVATE_IPS"
