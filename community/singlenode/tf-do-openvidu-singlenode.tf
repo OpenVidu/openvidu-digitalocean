@@ -281,6 +281,9 @@ MINIO_URL="https://$${DOMAIN}/minio-console/"
 /usr/local/bin/store_secret.sh save DASHBOARD_URL "$DASHBOARD_URL"
 /usr/local/bin/store_secret.sh save GRAFANA_URL "$GRAFANA_URL"
 /usr/local/bin/store_secret.sh save MINIO_URL "$MINIO_URL"
+
+# Full save secrets.env to S3 bucket
+/usr/local/bin/store_secret.sh fullsave
 EOF
 
   update_config_from_secret_script = <<-EOF
@@ -381,6 +384,8 @@ if [[ "${var.initialMeetApiKey}" != '' ]]; then
   update_secret "MEET_INITIAL_API_KEY" "$MEET_INITIAL_API_KEY"
 fi
 update_secret "ENABLED_MODULES" "$ENABLED_MODULES"
+
+/usr/local/bin/store_secret.sh fullsave
 EOF
 
   get_value_from_config_script = <<-EOF
@@ -420,9 +425,14 @@ EOF
 #!/bin/bash
 set -e
 
-# Modes: generate, save
+export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_space_key.access_key}"
+export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
+export AWS_DEFAULT_REGION="${var.spaceRegion}"
+
+# Modes: generate, save, fullsave
 # save mode: save the provided value in secrets.env and return it
 # generate mode: generate a random password save it and return it
+# fullsave mode: save the secrets.env to S3 bucket
 MODE="$1"
 if [[ "$MODE" == "generate" ]]; then
     SECRET_KEY_NAME="$2"
@@ -430,7 +440,7 @@ if [[ "$MODE" == "generate" ]]; then
     LENGTH="$${4:-44}"
     RANDOM_PASSWORD="$(openssl rand -base64 64 | tr -d '+/=\n' | cut -c -$${LENGTH})"
     RANDOM_PASSWORD="$${PREFIX}$${RANDOM_PASSWORD}"
-    # Save to secrets.env
+    # Save to secrets.env in bucket
     echo "$${SECRET_KEY_NAME}=$${RANDOM_PASSWORD}" >> /opt/openvidu/secrets.env
     echo "$RANDOM_PASSWORD"
 elif [[ "$MODE" == "save" ]]; then
@@ -445,8 +455,12 @@ elif [[ "$MODE" == "save" ]]; then
       echo "$${SECRET_KEY_NAME}=$${SECRET_VALUE}" >> /opt/openvidu/secrets.env
     fi
     echo "$SECRET_VALUE"
-else
-    exit 1
+elif [[ "$MODE" == "fullsave" ]]; then
+      aws s3 cp /opt/openvidu/secrets.env \
+        s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/secrets.env \
+        --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
+        --acl private \
+        --region=${var.spaceRegion}
 fi
 EOF
 
