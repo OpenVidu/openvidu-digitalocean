@@ -873,15 +873,23 @@ update_secret "ENABLED_MODULES" "$ENABLED_MODULES"
 MAX_LOCK_RETRIES=60
 LOCK_RETRY_COUNT=0
 while [ $LOCK_RETRY_COUNT -lt $MAX_LOCK_RETRIES ]; do
-  # Try to create lock file in S3 (fails if already exists)
-  if aws s3 cp /dev/null \
-    s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/lock.lock \
+  # Check if lock file already exists in S3
+  if aws s3api head-object \
+    --bucket "${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}" \
+    --key "lock.lock" \
     --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
     --region=${var.spaceRegion} 2>/dev/null; then
-    break
-  else
+    # Lock exists, wait and retry
     LOCK_RETRY_COUNT=$((LOCK_RETRY_COUNT + 1))
     sleep 2
+  else
+    # Lock does not exist, create it
+    aws s3api put-object \
+      --bucket "${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}" \
+      --key "lock.lock" \
+      --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
+      --region=${var.spaceRegion} 2>/dev/null
+    break
   fi
 done
 
