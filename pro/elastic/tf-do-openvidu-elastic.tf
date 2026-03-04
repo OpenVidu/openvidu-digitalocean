@@ -1,3 +1,5 @@
+resource "random_id" "bucket_suffix" { byte_length = 5 }
+
 # -------------- VPC and Firewalls ----------------
 
 resource "digitalocean_vpc" "openvidu_vpc" {
@@ -267,7 +269,7 @@ resource "digitalocean_droplet_autoscale" "media_node_pool" {
 # DigitalOcean Space
 resource "digitalocean_spaces_bucket" "openvidu_space" {
   count  = var.spaceName == "" ? 1 : 0
-  name   = "openvidu-appdata"
+  name   = "${var.stackName}-space-${random_id.bucket_suffix.hex}"
   region = var.spaceRegion
   acl    = "private"
 }
@@ -875,22 +877,24 @@ CONFIG_S3_EOF
   lsb-release \
   openssl
 
+  AWS_CLI_VERSION=2.34.0
   # Install aws-cli
-  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip"
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
   unzip -qq awscliv2.zip
   ./aws/install
   rm -rf awscliv2.zip aws
 
+  DOCTL_VERSION=1.146.0
   # Install doctl
   cd ~
-  wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-1.146.0-linux-amd64.tar.gz
-  tar xf ~/doctl-1.146.0-linux-amd64.tar.gz
+  wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
+  tar xf ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
   mv ~/doctl /usr/local/bin
-  rm -f ~/doctl-1.146.0-linux-amd64.tar.gz
+  rm -f ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
 
   export HOME="/root"
 
-  doctl auth init -t "${var.do_token}"
+  doctl auth init -t "${var.doToken}"
 
   export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_space_key.access_key}"
   export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
@@ -1071,22 +1075,24 @@ apt-get update && apt-get install -y \
   lsb-release \
   openssl
 
+AWS_CLI_VERSION=2.34.0
 # Install aws-cli
-curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip"
+curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
 unzip -qq awscliv2.zip
 ./aws/install
 rm -rf awscliv2.zip aws
 
+DOCTL_VERSION=1.146.0
 # Install doctl
 cd ~
-wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-1.146.0-linux-amd64.tar.gz
-tar xf ~/doctl-1.146.0-linux-amd64.tar.gz
+wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
+tar xf ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
 mv ~/doctl /usr/local/bin
-rm -f ~/doctl-1.146.0-linux-amd64.tar.gz
+rm -f ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
 
 export HOME="/root"
 
-doctl auth init -t "${var.do_token}"
+doctl auth init -t "${var.doToken}"
 
 # Install OpenVidu Media Node
 /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu Media Node"; exit 1; }

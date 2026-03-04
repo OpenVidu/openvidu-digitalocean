@@ -5,7 +5,7 @@
 
 # Your DigitalOcean API Token.
 # You can generate it at: https://cloud.digitalocean.com/account/api
-do_token = "put_your_digitalocean_token_here"
+doToken = "put_your_digitalocean_token_here"
 
 # Your OpenVidu license PRO.
 # Get it here: https://openvidu.io/account
@@ -83,6 +83,11 @@ stackName = "openvidu-elastic"
 
 # Space region (can be different from the Droplet region).
 # spaceRegion = "ams3"
+
+# Access credentials for DigitalOcean Spaces.
+# Required if using a custom Space for recordings.
+# spacesAccessId  = "YourAccessKey"
+# spacesSecretKey = "YourSecretKey"
 
 
 # --- Advanced Extra ---

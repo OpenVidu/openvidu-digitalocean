@@ -9,9 +9,15 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
 provider "digitalocean" {
-  token = var.do_token
+  token             = var.doToken
+  spaces_access_id  = var.spacesAccessId
+  spaces_secret_key = var.spacesSecretKey
 }

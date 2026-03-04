@@ -67,6 +67,11 @@ stackName = "openvidu-singlenode"
 # Space region (can be different from the Droplet region).
 # spaceRegion = "ams3"
 
+# Access credentials for DigitalOcean Spaces.
+# Required if using a custom Space for recordings.
+# spacesAccessId  = "YourAccessKey"
+# spacesSecretKey = "YourSecretKey"
+
 
 # --- Advanced Extra ---
 

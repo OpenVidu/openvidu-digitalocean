@@ -4,6 +4,8 @@ resource "tls_private_key" "openvidu_ssh_key" {
   rsa_bits  = 4096
 }
 
+resource "random_id" "bucket_suffix" { byte_length = 5 }
+
 resource "digitalocean_ssh_key" "openvidu_ssh_key_do" {
   name       = "${var.stackName}-ssh-key"
   public_key = tls_private_key.openvidu_ssh_key.public_key_openssh
@@ -99,7 +101,7 @@ resource "digitalocean_reserved_ip" "public_ip" {
 # DigitalOcean Space
 resource "digitalocean_spaces_bucket" "openvidu_space" {
   count  = var.spaceName == "" ? 1 : 0
-  name   = "openvidu-appdata"
+  name   = "${var.stackName}-space-${random_id.bucket_suffix.hex}"
   region = var.spaceRegion
   acl    = "private"
 }
@@ -563,8 +565,9 @@ CONFIG_S3_EOF
   lsb-release \
   openssl
 
+  AWS_CLI_VERSION=2.34.0
   # Install aws-cli
-  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip"
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
   unzip -qq awscliv2.zip
   ./aws/install
   rm -rf awscliv2.zip aws

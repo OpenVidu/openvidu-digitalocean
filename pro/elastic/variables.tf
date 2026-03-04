@@ -1,4 +1,4 @@
-variable "do_token" {
+variable "doToken" {
   description = "DigitalOcean API token"
   type        = string
   sensitive   = true
@@ -145,4 +145,16 @@ variable "spaceRegion" {
   description = "Region for the DigitalOcean Space. Common values: nyc3, ams3, sgp1, sfo3"
   type        = string
   default     = "ams3"
+}
+
+variable "spacesAccessId" {
+  description = "Access key ID for DigitalOcean Spaces (S3-compatible). Required if spaceName is provided."
+  type        = string
+  default     = ""
+}
+
+variable "spacesSecretKey" {
+  description = "Secret access key for DigitalOcean Spaces (S3-compatible). Required if spaceName is provided."
+  type        = string
+  default     = ""
 }

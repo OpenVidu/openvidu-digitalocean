@@ -1,3 +1,5 @@
+resource "random_id" "bucket_suffix" { byte_length = 5 }
+
 # -------------- VPC and Firewalls ----------------
 
 resource "digitalocean_vpc" "openvidu_vpc" {
@@ -435,14 +437,14 @@ resource "digitalocean_droplet_autoscale" "media_node_pool" {
 # DigitalOcean Space
 resource "digitalocean_spaces_bucket" "openvidu_space_appdata" {
   count  = var.spaceAppDataName == "" ? 1 : 0
-  name   = "openvidu-appdata"
+  name   = "${var.stackName}-space-appdata-${random_id.bucket_suffix.hex}"
   region = var.spaceRegion
   acl    = "private"
 }
 
 resource "digitalocean_spaces_bucket" "openvidu_space_clusterdata" {
   count  = var.spaceClusterDataName == "" ? 1 : 0
-  name   = "openvidu-clusterdata"
+  name   = "${var.stackName}-space-clusterdata-${random_id.bucket_suffix.hex}"
   region = var.spaceRegion
   acl    = "private"
 }
@@ -477,7 +479,7 @@ touch /opt/openvidu/secrets.env
 
 # Get IPs using DO metadata
 PUBLIC_IP=$(curl -s "https://api.digitalocean.com/v2/load_balancers?name=${var.stackName}-lb" \
-  -H "Authorization: Bearer ${var.do_token}" \
+  -H "Authorization: Bearer ${var.doToken}" \
   | jq -r '.load_balancers[0].ip')
 MASTER_NODE_PRIVATE_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address)
 
@@ -1084,22 +1086,24 @@ CONFIG_S3_EOF
   lsb-release \
   openssl
 
+  AWS_CLI_VERSION=2.34.0
   # Install aws-cli
-  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip"
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
   unzip -qq awscliv2.zip
   ./aws/install
   rm -rf awscliv2.zip aws
 
+  DOCTL_VERSION=1.146.0
   # Install doctl
   cd ~
-  wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-1.146.0-linux-amd64.tar.gz
-  tar xf ~/doctl-1.146.0-linux-amd64.tar.gz
+  wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
+  tar xf ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
   mv ~/doctl /usr/local/bin
-  rm -f ~/doctl-1.146.0-linux-amd64.tar.gz
+  rm -f ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
 
   export HOME="/root"
 
-  doctl auth init -t "${var.do_token}"
+  doctl auth init -t "${var.doToken}"
 
   export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
   export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
@@ -1129,7 +1133,7 @@ CONFIG_S3_EOF
   cat > /usr/local/bin/configure-nlb.sh << 'NLB_SCRIPT_EOF'
 #!/bin/bash
 export HOME="/root"
-doctl auth init -t "${var.do_token}"
+doctl auth init -t "${var.doToken}"
 LB_IP=$(doctl compute load-balancer list --format IP --no-header | grep -v "^$" | head -n1)
 if [ -n "$LB_IP" ]; then
   ip route add to local $LB_IP dev eth0 || true
@@ -1328,22 +1332,24 @@ apt-get update && apt-get install -y \
   lsb-release \
   openssl
 
+AWS_CLI_VERSION=2.34.0
 # Install aws-cli
-curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "awscliv2.zip"
+curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
 unzip -qq awscliv2.zip
 ./aws/install
 rm -rf awscliv2.zip aws
 
+DOCTL_VERSION=1.146.0
 # Install doctl
 cd ~
-wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-1.146.0-linux-amd64.tar.gz
-tar xf ~/doctl-1.146.0-linux-amd64.tar.gz
+wget https://github.com/digitalocean/doctl/releases/download/v1.146.0/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
+tar xf ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
 mv ~/doctl /usr/local/bin
-rm -f ~/doctl-1.146.0-linux-amd64.tar.gz
+rm -f ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
 
 export HOME="/root"
 
-doctl auth init -t "${var.do_token}"
+doctl auth init -t "${var.doToken}"
 
 # Install OpenVidu Media Node
 /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu Media Node"; exit 1; }
