@@ -1170,6 +1170,7 @@ NLB_SERVICE_EOF
   systemctl start openvidu || { echo "[OpenVidu] error starting OpenVidu"; exit 1; }
 
   # Update shared secrets (only for master node 1)
+  sleep 30 # wait for secrets to be generated
   MASTER_NODE_NAME=$(curl -s http://169.254.169.254/metadata/v1/hostname)
   MASTER_NODE_NUMBER=$(echo "$MASTER_NODE_NAME" | rev | cut -d'-' -f1 | rev)
   if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
