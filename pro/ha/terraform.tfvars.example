@@ -34,10 +34,6 @@ stackName = "openvidu-ha"
 # Leave commented to use the default
 # mediaNodeInstanceType = "s-4vcpu-8gb"
 
-# Fixed number of Media Nodes. Default: 4.
-# Leave commented to use the default
-# fixedNumberOfMediaNodes = 4
-
 # Media Engine. Default: "pion".
 # Available options: "pion", "mediasoup".
 # Leave commented to use the default
@@ -105,4 +101,26 @@ stackName = "openvidu-ha"
 
 # Extra flags for the installer.
 # additionalInstallFlags = "--flag1=value"
+
+
+# --- Autoscaling ---
+
+# Set to 0 to enable dynamic autoscaling (uses minNumberOfMediaNodes / maxNumberOfMediaNodes / scaleUpCPU / scaleDownCPU).
+# Set to a positive number to fix the number of Media Nodes (disables autoscaling). Default: 4.
+# fixedNumberOfMediaNodes = 4
+
+# [Dynamic autoscaling only] Minimum number of Media Nodes always running. Default: 1.
+# minNumberOfMediaNodes = 1
+
+# [Dynamic autoscaling only] Maximum number of Media Nodes allowed. Default: 10.
+# maxNumberOfMediaNodes = 10
+
+# [Dynamic autoscaling only] Average CPU % across active nodes to trigger Scale Out. Default: 70.
+# scaleUpCPU = 70
+
+# [Dynamic autoscaling only] Average CPU % across active nodes to trigger Scale In (graceful drain). Default: 30.
+# scaleDownCPU = 30
+
+# [Dynamic autoscaling only] How often the autoscaler runs, in minutes. Default: 5.
+# autoscalerCronInterval = 5
 

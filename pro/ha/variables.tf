@@ -80,34 +80,40 @@ variable "mediaNodeInstanceType" {
 }
 
 variable "fixedNumberOfMediaNodes" {
-  description = "If greater than 0, the number of media nodes will be fixed to this value"
+  description = "Number of Media Nodes to deploy with a fixed count. Set to 0 to enable dynamic autoscaling (uses minNumberOfMediaNodes / maxNumberOfMediaNodes / scaleUpCPU / scaleDownCPU). Default: 4."
   type        = number
   default     = 4
 }
 
-# variable "initialNumberOfMediaNodes" {
-#   description = "Number of initial media nodes to deploy"
-#   type        = number
-#   default     = 1
-# }
+variable "minNumberOfMediaNodes" {
+  description = "[Dynamic autoscaling only] Minimum number of Media Nodes always running. Default: 1."
+  type        = number
+  default     = 1
+}
 
-# variable "minNumberOfMediaNodes" {
-#   description = "Minimum number of media nodes to deploy (for reference, manual scaling required)"
-#   type        = number
-#   default     = 1
-# }
+variable "maxNumberOfMediaNodes" {
+  description = "[Dynamic autoscaling only] Maximum number of Media Nodes allowed. Default: 10."
+  type        = number
+  default     = 10
+}
 
-# variable "maxNumberOfMediaNodes" {
-#   description = "Maximum number of media nodes to deploy (for reference, manual scaling required)"
-#   type        = number
-#   default     = 5
-# }
+variable "scaleUpCPU" {
+  description = "[Dynamic autoscaling only] Average CPU % across active nodes to trigger Scale Out. Default: 70."
+  type        = number
+  default     = 70
+}
 
-# variable "scaleTargetCPU" {
-#   description = "Target CPU percentage to scale up or down"
-#   type        = number
-#   default     = 50
-# }
+variable "scaleDownCPU" {
+  description = "[Dynamic autoscaling only] Average CPU % across active nodes to trigger Scale In (graceful drain). Default: 30."
+  type        = number
+  default     = 30
+}
+
+variable "autoscalerCronInterval" {
+  description = "[Dynamic autoscaling only] How often the autoscaler runs, in minutes. Default: 5."
+  type        = number
+  default     = 5
+}
 
 variable "openviduLicense" {
   description = "Visit https://openvidu.io/account"

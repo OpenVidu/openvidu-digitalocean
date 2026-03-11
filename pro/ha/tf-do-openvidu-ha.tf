@@ -16,6 +16,10 @@ resource "digitalocean_tag" "media_node_tag" {
   name = "${var.stackName}-media-node-tag"
 }
 
+resource "digitalocean_tag" "media_node_draining_tag" {
+  name = "${var.stackName}-media-node-draining"
+}
+
 # External SSH access to Master Nodes
 resource "digitalocean_firewall" "external_master_ssh" {
   name = "${var.stackName}-external-master-ssh"
@@ -418,7 +422,9 @@ resource "digitalocean_droplet_autoscale" "media_node_pool" {
   name = "${var.stackName}-media-node-pool"
 
   config {
-    target_number_instances = var.fixedNumberOfMediaNodes
+    min_instances           = var.fixedNumberOfMediaNodes > 0 ? var.fixedNumberOfMediaNodes : var.minNumberOfMediaNodes
+    max_instances           = var.fixedNumberOfMediaNodes > 0 ? var.fixedNumberOfMediaNodes : var.maxNumberOfMediaNodes
+    target_number_instances = var.fixedNumberOfMediaNodes > 0 ? var.fixedNumberOfMediaNodes : var.minNumberOfMediaNodes
   }
 
   droplet_template {
@@ -1012,6 +1018,142 @@ systemctl stop openvidu
 systemctl start openvidu
 EOF
 
+  autoscale_script_master = <<-EOF
+#!/bin/bash
+# OpenVidu Media Node Autoscaler — Graceful Scale In (infinite drain)
+
+LOG="/var/log/openvidu-autoscaler.log"
+TAG="${digitalocean_tag.media_node_tag.name}"
+DRAINING_TAG="${digitalocean_tag.media_node_draining_tag.name}"
+REGION="${var.region}"
+SIZE="${var.mediaNodeInstanceType}"
+MIN_NODES=${var.minNumberOfMediaNodes}
+MAX_NODES=${var.maxNumberOfMediaNodes}
+SCALE_UP_CPU=${var.scaleUpCPU}
+SCALE_DOWN_CPU=${var.scaleDownCPU}
+VPC_ID="${digitalocean_vpc.openvidu_vpc.id}"
+SSH_KEY_ID="${digitalocean_ssh_key.openvidu_ssh_key_do.id}"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Autoscaler run started" >> "$LOG"
+
+if [ ! -f /root/.doctl_token ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: /root/.doctl_token not found, aborting" >> "$LOG"
+  exit 1
+fi
+
+doctl auth init -t "$(cat /root/.doctl_token)" --no-header >/dev/null 2>&1 || {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: doctl authentication failed, aborting" >> "$LOG"
+  exit 1
+}
+
+# Get active media nodes (exclude draining nodes — they no longer carry the media-node tag)
+DROPLETS_JSON=$(doctl compute droplet list \
+  --tag-name "$TAG" \
+  --output json)
+COUNT=$(echo "$DROPLETS_JSON" | jq '. | length')
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Active nodes: $COUNT | Min: $MIN_NODES | Max: $MAX_NODES" >> "$LOG"
+
+# Calculate average CPU across active nodes
+TOTAL_CPU=0
+VALID_COUNT=0
+for DROPLET_ID in $(echo "$DROPLETS_JSON" | jq -r '.[].id'); do
+  CPU=$(doctl monitoring droplet cpu "$DROPLET_ID" \
+    --format Average --no-header 2>/dev/null | tail -1 | awk '{print $1}')
+  if [ -n "$CPU" ] && [ "$CPU" != "null" ]; then
+    TOTAL_CPU=$(echo "$TOTAL_CPU + $CPU" | bc)
+    VALID_COUNT=$((VALID_COUNT + 1))
+  fi
+done
+
+if [ "$VALID_COUNT" -gt 0 ]; then
+  AVG_CPU=$(echo "scale=2; $TOTAL_CPU / $VALID_COUNT" | bc)
+else
+  AVG_CPU=0
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Avg CPU: $AVG_CPU% | Scale Up @ $SCALE_UP_CPU% | Scale Down @ $SCALE_DOWN_CPU%" >> "$LOG"
+
+# SCALE OUT: average CPU too high and below maximum
+if [ "$(echo "$AVG_CPU > $SCALE_UP_CPU" | bc)" -eq 1 ] && [ "$COUNT" -lt "$MAX_NODES" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Scale OUT triggered (avg CPU $AVG_CPU% > $SCALE_UP_CPU%)" >> "$LOG"
+  NODE_NAME="${var.stackName}-media-node-$(date +%s)"
+  doctl compute droplet create "$NODE_NAME" \
+    --region "$REGION" \
+    --size "$SIZE" \
+    --image ubuntu-24-04-x64 \
+    --vpc-uuid "$VPC_ID" \
+    --tag-names "$TAG" \
+    --ssh-keys "$SSH_KEY_ID" \
+    --user-data-file /usr/local/bin/media-node-user-data.sh \
+    --wait \
+    >> "$LOG" 2>&1 && \
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] New media node '$NODE_NAME' created" >> "$LOG" || \
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to create new media node" >> "$LOG"
+
+# SCALE IN: average CPU too low and above minimum — graceful infinite drain
+elif [ "$(echo "$AVG_CPU < $SCALE_DOWN_CPU" | bc)" -eq 1 ] && [ "$COUNT" -gt "$MIN_NODES" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Scale IN triggered (avg CPU $AVG_CPU% < $SCALE_DOWN_CPU%)" >> "$LOG"
+
+  # Find the node with the lowest CPU (drain only one per run)
+  LOWEST_ID=""
+  LOWEST_CPU=101
+  for DROPLET_ID in $(echo "$DROPLETS_JSON" | jq -r '.[].id'); do
+    CPU=$(doctl monitoring droplet cpu "$DROPLET_ID" \
+      --format Average --no-header 2>/dev/null | tail -1 | awk '{print $1}')
+    if [ -n "$CPU" ] && [ "$CPU" != "null" ] && [ "$(echo "$CPU < $LOWEST_CPU" | bc)" -eq 1 ]; then
+      LOWEST_CPU=$CPU
+      LOWEST_ID=$DROPLET_ID
+    fi
+  done
+
+  if [ -n "$LOWEST_ID" ]; then
+    NODE_IP=$(echo "$DROPLETS_JSON" | \
+      jq -r --arg id "$LOWEST_ID" \
+      '.[] | select((.id|tostring) == $id) | .networks.v4[] | select(.type=="private") | .ip_address')
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Draining node $LOWEST_ID (IP: $NODE_IP)" >> "$LOG"
+
+    # Remove from active pool — Master Nodes stop sending new sessions here
+    doctl compute droplet untag "$LOWEST_ID" --tag-name "$TAG" >> "$LOG" 2>&1 || true
+    # Mark as draining for visibility in the DO console
+    doctl compute droplet tag "$LOWEST_ID" --tag-name "$DRAINING_TAG" >> "$LOG" 2>&1 || true
+
+    # Launch graceful shutdown in the background — NO timeout.
+    # The node waits however long is needed for all active meetings to finish, then self-deletes.
+    ssh -i /root/.ssh/id_rsa \
+      -o StrictHostKeyChecking=accept-new \
+      -o ConnectTimeout=10 \
+      root@"$NODE_IP" \
+      "nohup /usr/local/bin/graceful_shutdown.sh > /var/log/graceful_shutdown.log 2>&1 &" \
+      >> "$LOG" 2>&1 || \
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: SSH to $NODE_IP failed — node will remain until manually removed" >> "$LOG"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Node $LOWEST_ID is now draining (self-deletes when sessions end)" >> "$LOG"
+  fi
+
+# ENSURE MINIMUM: below minimum, spin up a replacement
+elif [ "$COUNT" -lt "$MIN_NODES" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Below minimum ($COUNT < $MIN_NODES), creating new node" >> "$LOG"
+  NODE_NAME="${var.stackName}-media-node-$(date +%s)"
+  doctl compute droplet create "$NODE_NAME" \
+    --region "$REGION" \
+    --size "$SIZE" \
+    --image ubuntu-24-04-x64 \
+    --vpc-uuid "$VPC_ID" \
+    --tag-names "$TAG" \
+    --ssh-keys "$SSH_KEY_ID" \
+    --user-data-file /usr/local/bin/media-node-user-data.sh \
+    --wait \
+    >> "$LOG" 2>&1 && \
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] New media node '$NODE_NAME' created" >> "$LOG" || \
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to create new media node" >> "$LOG"
+
+else
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] No scaling action needed" >> "$LOG"
+fi
+EOF
+
   user_data_master = <<-EOF
 #!/bin/bash -x
 set -eu -o pipefail
@@ -1105,6 +1247,10 @@ CONFIG_S3_EOF
 
   doctl auth init -t "${var.doToken}"
 
+  # Store DO token for the autoscaler
+  echo "${var.doToken}" > /root/.doctl_token
+  chmod 600 /root/.doctl_token
+
   export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
   export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_spaces_key.secret_key}"
   export AWS_DEFAULT_REGION="${var.spaceRegion}"
@@ -1119,6 +1265,11 @@ CONFIG_S3_EOF
   --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
   --acl private \
   --region=${var.spaceRegion}
+
+  # Store SSH key locally for the autoscaler
+  # Written to all master nodes so it remains available after failover
+  mkdir -p /root/.ssh
+  cp /tmp/openvidu_ssh_key_ha.pem /root/.ssh/id_rsa
   
   # Clean up
   rm -f /tmp/openvidu_ssh_key_ha.pem
@@ -1177,8 +1328,29 @@ NLB_SERVICE_EOF
     /usr/local/bin/after_install.sh || { echo "[OpenVidu] error updating shared secrets"; exit 1; }
   fi
 
-  # restart.sh on reboot
+  # restart.sh on reboot + autoscaler cron on master node 1 (dynamic mode only)
+%{ if var.fixedNumberOfMediaNodes == 0 ~}
+  if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
+    # autoscaler.sh
+    cat > /usr/local/bin/autoscaler.sh << 'AUTOSCALER_EOF'
+${local.autoscale_script_master}
+AUTOSCALER_EOF
+    chmod +x /usr/local/bin/autoscaler.sh
+
+    # media-node-user-data.sh (pre-rendered at Terraform apply time)
+    cat > /usr/local/bin/media-node-user-data.sh << 'MEDIA_USER_DATA_EOF'
+${local.user_data_media}
+MEDIA_USER_DATA_EOF
+    chmod +x /usr/local/bin/media-node-user-data.sh
+
+    (echo "@reboot /usr/local/bin/restart.sh >> /var/log/openvidu-restart.log 2>&1"; \
+     echo "*/${var.autoscalerCronInterval} * * * * /usr/local/bin/autoscaler.sh >> /var/log/openvidu-autoscaler.log 2>&1") | crontab -
+  else
+    echo "@reboot /usr/local/bin/restart.sh >> /var/log/openvidu-restart.log 2>&1" | crontab
+  fi
+%{ else ~}
   echo "@reboot /usr/local/bin/restart.sh >> /var/log/openvidu-restart.log 2>&1" | crontab
+%{ endif ~}
   
   # Mark installation as complete
   echo "installation_complete" > /usr/local/bin/openvidu_install_counter.txt
@@ -1284,7 +1456,7 @@ if [ -x "$(command -v docker)" ]; then
     docker container kill --signal=SIGQUIT "$agent_container"
   done
 
-  # Wait for running containers to not be openvidu, ingress, egress or an openvidu agent
+  # Wait — no timeout — until all OpenVidu containers have stopped
   while [ $(docker ps --filter "label=openvidu-agent=true" -q | wc -l) -gt 0 ] || \
         [ $(docker inspect -f '{{.State.Running}}' openvidu 2>/dev/null) == "true" ] || \
         [ $(docker inspect -f '{{.State.Running}}' ingress 2>/dev/null) == "true" ] || \
@@ -1299,9 +1471,14 @@ fi
 # Get droplet ID from metadata
 DROPLET_ID=$(curl -s http://169.254.169.254/metadata/v1/id)
 
-# Delete this instance using doctl
-doctl compute droplet delete "$DROPLET_ID" \
-  --force || echo "Failed to self-delete, instance may already be terminating"
+# Authenticate doctl using stored token
+doctl auth init -t "$(cat /root/.doctl_token)" --no-header >/dev/null 2>&1
+
+# Delete this instance; fall back to OS shutdown if doctl fails
+doctl compute droplet delete "$DROPLET_ID" --force || {
+  echo "Failed to self-delete via doctl, attempting OS shutdown"
+  shutdown -h now
+}
 
 echo "Graceful shutdown completed."
 EOF
@@ -1351,6 +1528,10 @@ rm -f ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
 export HOME="/root"
 
 doctl auth init -t "${var.doToken}"
+
+# Store DO token for graceful shutdown self-deletion
+echo "${var.doToken}" > /root/.doctl_token
+chmod 600 /root/.doctl_token
 
 # Install OpenVidu Media Node
 /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu Media Node"; exit 1; }
