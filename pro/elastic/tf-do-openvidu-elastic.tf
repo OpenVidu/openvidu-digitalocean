@@ -12,6 +12,10 @@ resource "digitalocean_tag" "media_node_tag" {
   name = "${var.stackName}-media-node-tag"
 }
 
+resource "digitalocean_tag" "draining_tag" {
+  name = "${var.stackName}-draining"
+}
+
 # Firewall for Master Node - external access
 resource "digitalocean_firewall" "master_firewall" {
   name = "${var.stackName}-master-firewall"
@@ -142,6 +146,12 @@ resource "digitalocean_firewall" "media_to_master_firewall" {
 
   inbound_rule {
     protocol         = "tcp"
+    port_range       = "6080"
+    source_addresses = [digitalocean_vpc.openvidu_vpc.ip_range]
+  }
+
+  inbound_rule {
+    protocol         = "tcp"
     port_range       = "3100"
     source_addresses = [digitalocean_vpc.openvidu_vpc.ip_range]
   }
@@ -239,31 +249,210 @@ resource "digitalocean_droplet" "openvidu_master_node" {
 resource "digitalocean_reserved_ip" "master_public_ip" {
   droplet_id = digitalocean_droplet.openvidu_master_node.id
   region     = var.region
+  depends_on = [digitalocean_droplet.openvidu_master_node]
 }
 
-# Media node Autoscale Pool
-resource "digitalocean_droplet_autoscale" "media_node_pool" {
-  name = "${var.stackName}-media-node-pool"
-
-  config {
-    # min_instances          = var.minNumberOfMediaNodes
-    # max_instances          = var.maxNumberOfMediaNodes
-    # target_cpu_utilization = var.scaleTargetCPU / 100
-    target_number_instances = var.fixedNumberOfMediaNodes
-    # cooldown_minutes       = 5
+# Cleanup all media nodes on destroy (created by autoscaler outside Terraform state)
+resource "null_resource" "cleanup_media_nodes" {
+  triggers = {
+    do_token     = var.doToken
+    media_tag    = digitalocean_tag.media_node_tag.name
+    draining_tag = digitalocean_tag.draining_tag.name
   }
 
-  droplet_template {
-    size      = var.mediaNodeInstanceType
-    region    = var.region
-    image     = "ubuntu-24-04-x64"
-    tags      = [digitalocean_tag.media_node_tag.name]
-    ssh_keys  = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
-    user_data = local.user_data_media
-    vpc_uuid  = digitalocean_vpc.openvidu_vpc.id
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      curl -s -X DELETE \
+        -H "Authorization: Bearer ${self.triggers.do_token}" \
+        -H "Content-Type: application/json" \
+        "https://api.digitalocean.com/v2/droplets?tag_name=${self.triggers.media_tag}"
+      echo "Deleted all media node droplets"
+      curl -s -X DELETE \
+        -H "Authorization: Bearer ${self.triggers.do_token}" \
+        -H "Content-Type: application/json" \
+        "https://api.digitalocean.com/v2/droplets?tag_name=${self.triggers.draining_tag}"
+      echo "Deleted all draining node droplets"
+    EOT
+  }
+}
+
+# -------------- Autoscaler (DO Function) ----------------
+
+resource "null_resource" "deploy_autoscaler_function" {
+  triggers = {
+    code_hash  = sha256(local.autoscaler_function_code)
+    do_token   = var.doToken
+    stack_name = var.stackName
+    region     = var.region
   }
 
-  depends_on = [digitalocean_droplet.openvidu_master_node]
+  provisioner "local-exec" {
+    environment = {
+      DO_TOKEN    = var.doToken
+      FN_CODE_B64 = base64encode(local.autoscaler_function_code)
+    }
+
+    command = <<-EOT
+      set -e
+
+      DO_API="https://api.digitalocean.com/v2"
+      AUTH="Authorization: Bearer $DO_TOKEN"
+      CT="Content-Type: application/json"
+      LABEL="${var.stackName}-autoscaler"
+
+      # Check dependencies
+      for cmd in curl jq base64; do
+        command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd is required but not installed"; exit 1; }
+      done
+
+      # Helper: curl with verbose error on failure
+      do_curl() {
+        HTTP_BODY=$(curl -s -w "\n__HTTP_CODE__%%{http_code}" "$@")
+        HTTP_CODE=$(printf '%s' "$HTTP_BODY" | tail -1 | sed 's/__HTTP_CODE__//')
+        BODY=$(printf '%s' "$HTTP_BODY" | head -n -1)
+        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+          echo "ERROR: curl $* returned HTTP $HTTP_CODE: $BODY" >&2
+          exit 1
+        fi
+        printf '%s' "$BODY"
+      }
+
+      # === 1. Find or create Functions namespace ===
+      NS_LIST=$(do_curl -H "$AUTH" "$DO_API/functions/namespaces")
+      echo "Namespaces response: $NS_LIST"
+      NS_ID=$(printf '%s' "$NS_LIST" | jq -r --arg l "$LABEL" \
+        '[(.namespaces // [])[] | select(.label == $l)] | .[0].namespace // empty')
+
+      if [ -z "$NS_ID" ]; then
+        echo "Creating namespace $LABEL in region ${var.region} ..."
+        NS_RESP=$(do_curl -X POST -H "$AUTH" -H "$CT" \
+          -d "{\"region\":\"${var.region}\",\"label\":\"$LABEL\"}" \
+          "$DO_API/functions/namespaces")
+        echo "Create namespace response: $NS_RESP"
+        NS_ID=$(printf '%s' "$NS_RESP"    | jq -r '.namespace.namespace // empty')
+        NS_UUID=$(printf '%s' "$NS_RESP"  | jq -r '.namespace.uuid // empty')
+        API_HOST=$(printf '%s' "$NS_RESP" | jq -r '.namespace.api_host // empty')
+        API_KEY=$(printf '%s' "$NS_RESP"  | jq -r '.namespace.key // empty')
+      else
+        echo "Namespace exists: $NS_ID"
+        NS_DETAIL=$(do_curl -H "$AUTH" "$DO_API/functions/namespaces/$NS_ID")
+        NS_UUID=$(printf '%s' "$NS_DETAIL"  | jq -r '.namespace.uuid // empty')
+        API_HOST=$(printf '%s' "$NS_DETAIL" | jq -r '.namespace.api_host // empty')
+        API_KEY=$(printf '%s' "$NS_DETAIL"  | jq -r '.namespace.key // empty')
+      fi
+
+      [ -n "$NS_ID" ]   || { echo "ERROR: could not get namespace ID";  exit 1; }
+      [ -n "$NS_UUID" ]  || { echo "ERROR: could not get namespace UUID"; exit 1; }
+      [ -n "$API_HOST" ] || { echo "ERROR: could not get API host";      exit 1; }
+      [ -n "$API_KEY" ]  || { echo "ERROR: could not get API key";       exit 1; }
+
+      # OpenWhisk Basic Auth = base64("uuid:key")
+      OW_AUTH=$(printf '%s:%s' "$NS_UUID" "$API_KEY" | base64 -w0)
+
+      # === 2. Create / update OpenWhisk package ===
+      do_curl -X PUT \
+        -H "Authorization: Basic $OW_AUTH" -H "$CT" \
+        -d '{}' \
+        "$API_HOST/api/v1/namespaces/_/packages/autoscaler?overwrite=true" > /dev/null
+
+      # === 3. Deploy the action ===
+      CODE=$(printf '%s' "$FN_CODE_B64" | base64 -d)
+      PAYLOAD=$(jq -n --arg code "$CODE" '{
+        "exec":  {"kind":"python:default","code":$code},
+        "limits":{"timeout":120000,"memory":256},
+        "annotations":[{"key":"web-export","value":false}]
+      }')
+
+      do_curl -X PUT \
+        -H "Authorization: Basic $OW_AUTH" -H "$CT" \
+        -d "$PAYLOAD" \
+        "$API_HOST/api/v1/namespaces/_/actions/autoscaler/check?overwrite=true" > /dev/null
+
+      echo "Action autoscaler/check deployed."
+
+      # === 4. Create / replace cron trigger (every 4 minutes) ===
+      TRIGGER="${var.stackName}-autoscale-cron"
+      curl -s -X DELETE -H "$AUTH" \
+        "$DO_API/functions/namespaces/$NS_ID/triggers/$TRIGGER" > /dev/null 2>&1 || true
+
+      do_curl -X POST -H "$AUTH" -H "$CT" \
+        -d "{
+          \"name\":\"$TRIGGER\",
+          \"function\":\"autoscaler/check\",
+          \"type\":\"SCHEDULED\",
+          \"is_enabled\":true,
+          \"scheduled_details\":{\"cron\":\"*/4 * * * *\",\"body\":{}}
+        }" \
+        "$DO_API/functions/namespaces/$NS_ID/triggers" > /dev/null
+
+      echo "Trigger $TRIGGER created. Deployment complete."
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      DO_API="https://api.digitalocean.com/v2"
+      TOKEN="${self.triggers.do_token}"
+      LABEL="${self.triggers.stack_name}-autoscaler"
+      TRIGGER="${self.triggers.stack_name}-autoscale-cron"
+
+      echo "=== Destroying autoscaler function ==="
+      echo "Looking for namespace with label: $LABEL"
+
+      NS_LIST=$(curl -sf -H "Authorization: Bearer $TOKEN" "$DO_API/functions/namespaces" || echo '{"namespaces":[]}')
+      echo "Namespaces: $NS_LIST"
+      NS_ID=$(printf '%s' "$NS_LIST" | jq -r --arg l "$LABEL" \
+        '[(.namespaces // [])[] | select(.label == $l)] | .[0].namespace // empty')
+
+      if [ -z "$NS_ID" ]; then
+        echo "No namespace found with label $LABEL — nothing to destroy."
+        exit 0
+      fi
+
+      echo "Found namespace: $NS_ID"
+      NS_DETAIL=$(curl -sf -H "Authorization: Bearer $TOKEN" "$DO_API/functions/namespaces/$NS_ID" || echo '{}')
+      NS_UUID=$(printf '%s' "$NS_DETAIL"  | jq -r '.namespace.uuid // empty')
+      API_HOST=$(printf '%s' "$NS_DETAIL" | jq -r '.namespace.api_host // empty')
+      API_KEY=$(printf '%s' "$NS_DETAIL"  | jq -r '.namespace.key // empty')
+
+      # Delete cron trigger
+      echo "Deleting trigger $TRIGGER ..."
+      curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+        "$DO_API/functions/namespaces/$NS_ID/triggers/$TRIGGER" || true
+
+      # Delete action + package via OpenWhisk API
+      if [ -n "$API_HOST" ] && [ -n "$NS_UUID" ] && [ -n "$API_KEY" ]; then
+        OW_AUTH=$(printf '%s:%s' "$NS_UUID" "$API_KEY" | base64 -w0)
+        echo "Deleting action autoscaler/check ..."
+        curl -s -X DELETE -H "Authorization: Basic $OW_AUTH" \
+          "$API_HOST/api/v1/namespaces/_/actions/autoscaler/check" || true
+        echo "Deleting package autoscaler ..."
+        curl -s -X DELETE -H "Authorization: Basic $OW_AUTH" \
+          "$API_HOST/api/v1/namespaces/_/packages/autoscaler" || true
+      else
+        echo "WARN: missing OpenWhisk credentials, skipping action/package deletion"
+      fi
+
+      # Delete the namespace itself
+      echo "Deleting namespace $NS_ID ..."
+      DEL_RESP=$(curl -s -w "\n__HTTP_CODE__%%{http_code}" -X DELETE \
+        -H "Authorization: Bearer $TOKEN" \
+        "$DO_API/functions/namespaces/$NS_ID")
+      DEL_CODE=$(printf '%s' "$DEL_RESP" | tail -1 | sed 's/__HTTP_CODE__//')
+      echo "Namespace delete HTTP $DEL_CODE"
+
+      echo "=== Autoscaler function destroyed ==="
+    EOT
+  }
+
+  depends_on = [
+    digitalocean_droplet.openvidu_master_node,
+    digitalocean_vpc.openvidu_vpc,
+    digitalocean_tag.media_node_tag,
+    digitalocean_tag.draining_tag,
+  ]
 }
 
 # DigitalOcean Space
@@ -302,6 +491,9 @@ touch /opt/openvidu/secrets.env
 
 # Get IPs using DO metadata
 PUBLIC_IP=$(curl -s http://169.254.169.254/metadata/v1/floating_ip/ipv4/ip_address)
+if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" == "null" ]; then
+  PUBLIC_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
+fi
 MASTER_NODE_PRIVATE_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address)
 
 if [[ "${var.domainName}" == "" ]]; then
@@ -412,7 +604,19 @@ fi
 FINAL_COMMAND="$INSTALL_COMMAND $(printf "%s " "$${COMMON_ARGS[@]}") $(printf "%s " "$${CERT_ARGS[@]}")"
 
 # Execute installation
-exec bash -c "$FINAL_COMMAND"
+set +e
+MAX_RETRIES=5
+RETRY_COUNT=1
+
+until bash -c "$FINAL_COMMAND"; do
+  echo "Install command failed (attempt $RETRY_COUNT/$MAX_RETRIES)"
+  if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+    echo "Install command failed after $MAX_RETRIES attempts"
+    exit 1
+  fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  sleep 10
+done
 EOF
 
   config_s3_script_master = <<-EOF
@@ -691,117 +895,343 @@ systemctl stop openvidu
 systemctl start openvidu
 EOF
 
-  #   autoscale_script_master = <<-EOF
-  # #!/bin/bash
+  autoscaler_function_code = <<-PYEOF
+import base64
+import json
+import os
+import random
+import time
+import traceback
+import urllib.request
+import urllib.error
 
-  # DO_TOKEN="${var.do_token}"
-  # TAG="${digitalocean_tag.media_node_tag.name}"
-  # REGION="${var.region}"
-  # SIZE="${var.mediaNodeInstanceType}"
-  # MIN_NODES=${var.minNumberOfMediaNodes}
-  # MAX_NODES=${var.maxNumberOfMediaNodes}
+# ---- Configuration (values baked via Terraform interpolation) ----
+DO_TOKEN      = "${var.doToken}"
+MEDIA_TAG     = "${digitalocean_tag.media_node_tag.name}"
+DRAINING_TAG  = "${digitalocean_tag.draining_tag.name}"
+REGION        = "${var.region}"
+SIZE          = "${var.mediaNodeInstanceType}"
+VPC_UUID      = "${digitalocean_vpc.openvidu_vpc.id}"
+SSH_KEY_ID    = "${digitalocean_ssh_key.openvidu_ssh_key_do.id}"
+STACK_NAME    = "${var.stackName}"
+MIN_NODES     = int("${var.minNumberOfMediaNodes}")
+MAX_NODES     = int("${var.maxNumberOfMediaNodes}")
+TARGET_CPU    = float("${var.scaleTargetCPU}")
+USER_DATA     = base64.b64decode("${base64encode(local.user_data_media)}").decode()
 
-  # doctl auth init -t $DO_TOKEN
+API = "https://api.digitalocean.com/v2"
+HDR = {"Authorization": f"Bearer {DO_TOKEN}", "Content-Type": "application/json"}
 
-  # # Get Droplets using doctl
-  # DROPLETS_JSON=$(doctl compute droplet list --tag-name "$TAG" --format ID,Name,PublicIPv4,PrivateIPv4,Region,Size,Status --output json)
-  # CURRENT_IPS=$(echo "$DROPLETS_JSON" | jq -r '.[].PublicIPv4')
-  # COUNT=$(echo "$DROPLETS_JSON" | jq '. | length')
+# All log lines are collected here and returned in the response body so they
+# are visible in the DigitalOcean Functions console (activation result).
+_LOGS = []
 
-  # # Get CPU metrics for all media nodes
-  # TOTAL_CPU=0
-  # VALID_COUNT=0
+def log(m):
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}] {m}"
+    print(line, flush=True)
+    _LOGS.append(line)
 
-  # for DROPLET_ID in $(echo "$DROPLETS_JSON" | jq -r '.[].ID'); do
-  #   # Get CPU usage from DigitalOcean monitoring API
-  #   CPU_USAGE=$(doctl monitoring droplet cpu "$DROPLET_ID" --format Average --no-header 2>/dev/null | tail -1 | awk '{print $1}')
+def apicall(method, path, body=None):
+    url = f"{API}{path}" if path.startswith("/") else path
+    req = urllib.request.Request(url, headers=HDR, method=method)
+    if body is not None:
+        req.data = json.dumps(body).encode()
+    log(f"  -> {method} {path}")
+    if body:
+        log(f"     body: {json.dumps(body)}")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            d = r.read().decode()
+            parsed = json.loads(d) if d.strip() else {}
+            log(f"     <- {r.status} OK")
+            return parsed
+    except urllib.error.HTTPError as e:
+        body_txt = e.read().decode()[:400]
+        log(f"     <- HTTP {e.code} ERROR: {body_txt}")
+        return None
+    except urllib.error.URLError as e:
+        log(f"     <- URL error: {e.reason}")
+        return None
+    except Exception as e:
+        log(f"     <- unexpected error: {e}")
+        log(traceback.format_exc())
+        return None
 
-  #   if [ -n "$CPU_USAGE" ] && [ "$CPU_USAGE" != "null" ]; then
-  #     TOTAL_CPU=$(echo "$TOTAL_CPU + $CPU_USAGE" | bc)
-  #     VALID_COUNT=$((VALID_COUNT + 1))
-  #   fi
-  # done
+def list_nodes():
+    log("Listing media nodes ...")
+    r = apicall("GET", f"/droplets?tag_name={MEDIA_TAG}&per_page=200")
+    nodes = r.get("droplets", []) if r else []
+    for d in nodes:
+        log(f"  droplet id={d['id']} name={d['name']} status={d['status']} "
+            f"region={d.get('region',{}).get('slug','?')} created={d.get('created_at','?')}")
+    return nodes
 
-  # # Calculate average CPU
-  # if [ "$VALID_COUNT" -gt 0 ]; then
-  #   AVG_CPU=$(echo "scale=2; $TOTAL_CPU / $VALID_COUNT" | bc)
-  # else
-  #   AVG_CPU=0
-  # fi
+def cpu(did, name):
+    now = int(time.time())
+    log(f"  Fetching CPU metrics for droplet {did} ({name}) ...")
+    r = apicall("GET", f"/monitoring/metrics/droplet/cpu?host_id={did}&start={now - 240}&end={now}")
+    if not r or "data" not in r:
+        log(f"    No metrics data for {did}")
+        return None
+    idle = next(
+      (
+        float(item["values"][-1][1])
+        for item in (
+          r.get("data", {}).get("result", [])
+          if isinstance(r.get("data", {}).get("result", []), list)
+          else [r]
+        )
+        if item.get("metric", {}).get("mode") == "idle" and item.get("values")
+      ),
+      None,
+    )
+    if not idle:
+        log(f"    No idle samples found for {did}")
+        return None
+    system = next(
+      (
+        float(item["values"][-1][1])
+        for item in (
+          r.get("data", {}).get("result", [])
+          if isinstance(r.get("data", {}).get("result", []), list)
+          else [r]
+        )
+        if item.get("metric", {}).get("mode") == "system" and item.get("values")
+      ),
+      None,
+    )
+    if not system:
+        log(f"    No system CPU samples found for {did}")
+        return None
+    user = next(
+      (
+        float(item["values"][-1][1])
+        for item in (
+          r.get("data", {}).get("result", [])
+          if isinstance(r.get("data", {}).get("result", []), list)
+          else [r]
+        )
+        if item.get("metric", {}).get("mode") == "user" and item.get("values")
+      ),
+      None,
+    )
+    if not user:
+        log(f"    No user CPU samples found for {did}")
+        return None
+    last_idle = next(
+      (
+      float(item["values"][0][1])  # first sample instead of last
+      for item in (
+        r.get("data", {}).get("result", [])
+        if isinstance(r.get("data", {}).get("result", []), list)
+        else [r]
+      )
+      if item.get("metric", {}).get("mode") == "idle" and item.get("values")
+      ),
+      None,
+    )
+    if last_idle is None:
+      log(f"    No initial idle sample found for {did}")
+      return None
+    last_system = next(
+      (
+      float(item["values"][0][1])  # first sample instead of last
+      for item in (
+        r.get("data", {}).get("result", [])
+        if isinstance(r.get("data", {}).get("result", []), list)
+        else [r]
+      )
+      if item.get("metric", {}).get("mode") == "system" and item.get("values")
+      ),
+      None,
+    )
+    if last_system is None:
+      log(f"    No initial system CPU sample found for {did}")
+      return None
+    last_user= next(
+      (
+      float(item["values"][0][1])  # first sample instead of last
+      for item in (
+        r.get("data", {}).get("result", [])
+        if isinstance(r.get("data", {}).get("result", []), list)
+        else [r]
+      )
+      if item.get("metric", {}).get("mode") == "user" and item.get("values")
+      ),
+      None,
+    )
+    if last_user is None:
+      log(f"    No initial user CPU sample found for {did}")
+      return None
 
-  # SCALE_TARGET_CPU=${var.scaleTargetCPU}
+    log(f"    Response data: {json.dumps(r)}")
+    log(f"    Idle now: {idle}, 4 minutes ago: {last_idle}")
+    log(f"    System now: {system}, 4 minutes ago: {last_system}")
+    log(f"    User now: {user}, 4 minutes ago: {last_user}")
+    idle_last_4_minutes = idle - last_idle
+    system_last_4_minutes = system - last_system
+    user_last_4_minutes = user - last_user
 
-  # echo "Current nodes: $COUNT, Average CPU: $AVG_CPU%, Target CPU: $SCALE_TARGET_CPU%"
+    log(f"    Idle CPU in last 4 minutes: {idle_last_4_minutes}")
+    log(f"    System CPU in last 4 minutes: {system_last_4_minutes}")
+    log(f"    User CPU in last 4 minutes: {user_last_4_minutes}")
 
-  # # Scale Out: if average CPU > target AND current count < max
-  # if [ "$(echo "$AVG_CPU > $SCALE_TARGET_CPU" | bc)" -eq 1 ] && [ "$COUNT" -lt "$MAX_NODES" ]; then
+    total_last_4_minutes = system_last_4_minutes + user_last_4_minutes
 
-  #     NEXT_INDEX=$((COUNT + 1))
-  #     NODE_NAME="${var.stackName}-media-node-$NEXT_INDEX"
+    usage = (total_last_4_minutes / (total_last_4_minutes + idle_last_4_minutes)) * 100 if (total_last_4_minutes + idle_last_4_minutes) > 0 else 0.0
+    log(f"    CPU usage for {did} ({name}): {usage}%")
+    if last_idle == idle:
+        return None
+    return usage
 
-  #     cat > /tmp/media-node-user-data.sh << 'MEDIA_USER_DATA_EOF'
-  # ${local.user_data_media}
-  # MEDIA_USER_DATA_EOF
+def create_node():
+    name = f"{STACK_NAME}-media-{int(time.time())}-{random.randint(1000,9999)}"
+    log(f"Creating new media node: name={name} region={REGION} size={SIZE} vpc={VPC_UUID}")
+    try:
+        keys = [int(SSH_KEY_ID)]
+    except ValueError:
+        keys = [SSH_KEY_ID]
+    payload = {
+        "name": name, "region": REGION, "size": SIZE,
+        "image": "ubuntu-24-04-x64", "vpc_uuid": VPC_UUID,
+        "ssh_keys": keys, "tags": [MEDIA_TAG],
+        "user_data": USER_DATA, "monitoring": True,
+    }
+    r = apicall("POST", "/droplets", payload)
+    if r and "droplet" in r:
+        d = r["droplet"]
+        log(f"  Node created: id={d['id']} name={d['name']} status={d['status']}")
+        return True
+    log(f"  Failed to create node {name}")
+    return False
 
-  #     doctl compute droplet create "$${NODE_NAME}" \
-  #       --region "$${REGION}" \
-  #       --size "$${SIZE}" \
-  #       --image ubuntu-24-04-x64 \
-  #       --vpc-uuid "${digitalocean_vpc.openvidu_vpc.id}" \
-  #       --tag-names "$${TAG}" \
-  #       --ssh-keys "${var.sshKeyFingerprint},$(cat /etc/cluster_ssh_key_id)" \
-  #       --user-data-file /tmp/media-node-user-data.sh \
-  #       --wait
+def tag_res(did, t):
+    log(f"  Tagging droplet {did} with '{t}' ...")
+    apicall("POST", f"/tags/{t}/resources",
+        {"resources": [{"resource_id": str(did), "resource_type": "droplet"}]})
 
-  # # Scale In: if average CPU < target AND current count > min
-  # elif [ "$(echo "$AVG_CPU < $SCALE_TARGET_CPU" | bc)" -eq 1 ] && [ "$COUNT" -gt "$MIN_NODES" ]; then
+def untag_res(did, t):
+    log(f"  Removing tag '{t}' from droplet {did} ...")
+    url = f"{API}/tags/{t}/resources"
+    req = urllib.request.Request(url, headers=HDR, method="DELETE")
+    req.data = json.dumps({"resources": [{"resource_id": str(did), "resource_type": "droplet"}]}).encode()
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            log(f"    <- {r.status} OK")
+    except urllib.error.HTTPError as e:
+        log(f"    <- HTTP {e.code} ERROR: {e.read().decode()[:200]}")
+    except Exception as e:
+        log(f"    <- error: {e}")
 
-  #   # Get the node with lowest CPU usage
-  #   LOWEST_CPU_ID=""
-  #   LOWEST_CPU=100
+def main(args):
+    """DO Functions entry point — invoked every 5 minutes by scheduled trigger."""
+    log("=" * 60)
+    log(f"Autoscaler invoked | stack={STACK_NAME} region={REGION}")
+    log(f"Config: min={MIN_NODES} max={MAX_NODES} target_cpu={TARGET_CPU}%")
+    log(f"Tags: media='{MEDIA_TAG}' draining='{DRAINING_TAG}'")
+    log("=" * 60)
 
-  #   for DROPLET_ID in $(echo "$DROPLETS_JSON" | jq -r '.[].ID'); do
-  #     CPU_USAGE=$(doctl monitoring droplet cpu "$DROPLET_ID" --format Average --no-header 2>/dev/null | tail -1 | awk '{print $1}')
-  #     if [ -n "$CPU_USAGE" ] && [ "$(echo "$CPU_USAGE < $LOWEST_CPU" | bc)" -eq 1 ]; then
-  #       LOWEST_CPU=$CPU_USAGE
-  #       LOWEST_CPU_ID=$DROPLET_ID
-  #     fi
-  #   done
+    result = {"action": "none", "nodes": 0, "avg_cpu": 0.0}
 
-  #   if [ "$LOWEST_CPU_ID" != "" ]; then
-  #     # Get the private IP of the node to be drained
-  #     NODE_IP=$(echo "$DROPLETS_JSON" | jq -r --arg id "$LOWEST_CPU_ID" '.[] | select(.ID == ($id | tonumber)) | .PrivateIPv4')
+    try:
+        nodes = list_nodes()
+        n = len(nodes)
+        result["nodes"] = n
+        log(f"Total media nodes: {n}")
 
-  #     # Remove the media-node tag and add draining tag to exclude from future queries
-  #     doctl compute droplet tag "$LOWEST_CPU_ID" --tag-name "${var.stackName}-draining"
-  #     doctl compute droplet untag "$LOWEST_CPU_ID" --tag-name "$TAG"
+        # Ensure minimum
+        if n < MIN_NODES:
+            log(f"DECISION: scale-out-min (have {n}, need {MIN_NODES})")
+            created = create_node()
+            result["action"] = "scale-out-min"
+            result["created"] = created
+            log("=" * 60)
+            result["logs"] = _LOGS
+            return {"body": result}
 
-  #     # Tell the media node to initiate graceful shutdown (it will self-delete)
-  #     ssh -i /root/.ssh/id_rsa -o ConnectTimeout=300 root@"$NODE_IP" "nohup /usr/local/bin/graceful_shutdown.sh > /var/log/graceful_shutdown.log 2>&1 &" || true
-  #   fi
+        # Gather CPU for all nodes
+        log("Gathering CPU metrics ...")
+        cmap = {}  # id -> (usage, name)
+        for d in nodes:
+            usage = cpu(d["id"], d["name"])
+            if usage is not None:
+                cmap[d["id"]] = (usage, d["name"])
+            else:
+                log(f"  Skipping {d['id']} ({d['name']}) — no CPU data")
 
-  # # Ensure minimum nodes
-  # elif [ "$COUNT" -lt "$MIN_NODES" ]; then
+        if cmap:
+            avg = sum(v for v, _ in cmap.values()) / len(cmap)
+        else:
+            avg = 0.0
+            log("WARNING: no CPU data available for any node — skipping scaling decisions")
 
-  #     NEXT_INDEX=$((COUNT + 1))
-  #     NODE_NAME="${var.stackName}-media-node-$NEXT_INDEX"
+        result["avg_cpu"] = round(avg, 2)
+        result["nodes_with_metrics"] = len(cmap)
+        log(f"Average CPU across {len(cmap)}/{n} nodes: {avg:.2f}%")
+        for did, (usage, name) in sorted(cmap.items(), key=lambda x: x[1][0], reverse=True):
+            log(f"  {did} ({name}): {usage}%")
 
-  #     cat > /tmp/media-node-user-data.sh << 'MEDIA_USER_DATA_EOF'
-  # ${local.user_data_media}
-  # MEDIA_USER_DATA_EOF
+        # Scale out
+        if avg > TARGET_CPU and n < MAX_NODES:
+            log(f"DECISION: scale-out (avg={avg:.2f}% > target={TARGET_CPU}%, nodes={n} < max={MAX_NODES})")
+            created = create_node()
+            result["action"] = "scale-out"
+            result["created"] = created
+            log("=" * 60)
+            result["logs"] = _LOGS
+            return {"body": result}
 
-  #     doctl compute droplet create "$${NODE_NAME}" \
-  #       --region "$${REGION}" \
-  #       --size "$${SIZE}" \
-  #       --image ubuntu-24-04-x64 \
-  #       --vpc-uuid "${digitalocean_vpc.openvidu_vpc.id}" \
-  #       --tag-name "$${TAG}" \
-  #       --ssh-keys "${var.sshKeyFingerprint},$(cat /etc/cluster_ssh_key_id)" \
-  #       --user-data-file /tmp/media-node-user-data.sh \
-  #       --wait
+        if avg > TARGET_CPU and n >= MAX_NODES:
+            log(f"DECISION: hold (avg={avg:.2f}% > target but already at max={MAX_NODES})")
 
-  # fi
-  # EOF
+        # Scale in
+        thr = TARGET_CPU
+        log(f"Scale-in threshold: {thr:.2f}%")
+        do_in = (avg < thr and n > MIN_NODES) or (n > MAX_NODES)
+
+        if do_in:
+            log(f"DECISION: scale-in (avg={avg:.2f}% < thr={thr:.2f}% or n={n} > max={MAX_NODES})")
+            # Pick the node with lowest CPU usage
+            if cmap:
+                tid = min(cmap, key=lambda x: cmap[x][0])
+                tname = cmap[tid][1]
+                tcpu  = cmap[tid][0]
+            else:
+                tid   = nodes[0]["id"]   if nodes else None
+                tname = nodes[0]["name"] if nodes else "?"
+                tcpu  = 0.0
+            if tid:
+                log(f"  Selected node to drain: {tid} ({tname}) CPU={tcpu}%")
+                untag_res(tid, MEDIA_TAG)
+                tag_res(tid, DRAINING_TAG)
+                result["action"] = "scale-in"
+                result["drained_node"] = {"id": tid, "name": tname, "cpu": tcpu}
+            else:
+                log("  No node available to drain")
+        else:
+            log(f"DECISION: hold (avg={avg:.2f}% within range, nodes={n} within min/max)")
+
+    except Exception as e:
+        log(f"UNHANDLED EXCEPTION: {e}")
+        log(traceback.format_exc())
+        result["error"] = str(e)
+
+    log("=" * 60)
+    result["logs"] = _LOGS
+    return {"body": result}
+PYEOF
+
+  tag_watcher_script_media = <<-EOF
+#!/bin/bash -x
+DRAINING_TAG="${digitalocean_tag.draining_tag.name}"
+SELF_TAGS=$(curl -sf http://169.254.169.254/metadata/v1/tags 2>/dev/null || echo "")
+
+if echo "$SELF_TAGS" | grep -qw "$DRAINING_TAG"; then
+  echo "$(date): Draining tag detected. Initiating graceful shutdown."
+  rm -f /etc/cron.d/tag-watcher
+  nohup /usr/local/bin/graceful_shutdown.sh > /var/log/graceful_shutdown.log 2>&1 &
+fi
+EOF
 
   user_data_master = <<-EOF
 #!/bin/bash -x
@@ -900,18 +1330,17 @@ CONFIG_S3_EOF
   export AWS_SECRET_ACCESS_KEY="${digitalocean_spaces_key.openvidu_space_key.secret_key}"
   export AWS_DEFAULT_REGION="${var.spaceRegion}"
   
-  # Save private key to file
+  # Save private key to bucket (for manual SSH access)
   echo "${tls_private_key.openvidu_ssh_key.private_key_openssh}" > /tmp/openvidu_ssh_key_elastic.pem
   chmod 600 /tmp/openvidu_ssh_key_elastic.pem
-  
+
   # Upload private key to the bucket
   aws s3 cp /tmp/openvidu_ssh_key_elastic.pem \
   s3://${var.spaceName == "" ? digitalocean_spaces_bucket.openvidu_space[0].name : var.spaceName}/openvidu_ssh_key_elastic.pem \
   --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
   --acl private \
   --region=${var.spaceRegion}
-  
-  # Clean up
+
   rm -f /tmp/openvidu_ssh_key_elastic.pem
 
   # Install OpenVidu
@@ -928,7 +1357,7 @@ CONFIG_S3_EOF
 
   # restart.sh on reboot
   echo "@reboot /usr/local/bin/restart.sh >> /var/log/openvidu-restart.log 2>&1" | crontab
-  
+
   # Mark installation as complete
   echo "installation_complete" > /usr/local/bin/openvidu_install_counter.txt
 fi
@@ -1006,7 +1435,19 @@ COMMON_ARGS=(
 FINAL_COMMAND="$INSTALL_COMMAND $(printf "%s " "$${COMMON_ARGS[@]}")"
 
 # Execute installation
-exec bash -c "$FINAL_COMMAND"
+set +e
+MAX_RETRIES=5
+RETRY_COUNT=1
+
+until bash -c "$FINAL_COMMAND"; do
+  echo "Install command failed (attempt $RETRY_COUNT/$MAX_RETRIES)"
+  if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+    echo "Install command failed after $MAX_RETRIES attempts"
+    exit 1
+  fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  sleep 10
+done
 EOF
 
   graceful_shutdown_script_media = <<-EOF
@@ -1064,6 +1505,12 @@ ${local.graceful_shutdown_script_media}
 GRACEFUL_SHUTDOWN_EOF
 chmod +x /usr/local/bin/graceful_shutdown.sh
 
+# tag_watcher.sh (detects draining tag and triggers graceful shutdown)
+cat > /usr/local/bin/tag_watcher.sh << 'TAG_WATCHER_EOF'
+${local.tag_watcher_script_media}
+TAG_WATCHER_EOF
+chmod +x /usr/local/bin/tag_watcher.sh
+
 echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
 apt-get update && apt-get install -y \
   curl \
@@ -1102,5 +1549,9 @@ echo "installation_complete" > /usr/local/bin/openvidu_install_counter.txt
 
 # Start OpenVidu
 systemctl start openvidu || { echo "[OpenVidu] error starting OpenVidu"; exit 1; }
+
+# Tag watcher cron: check every minute if this node should be drained
+echo "*/2 * * * * root /usr/local/bin/tag_watcher.sh >> /var/log/tag_watcher.log 2>&1" > /etc/cron.d/tag-watcher
+chmod 644 /etc/cron.d/tag-watcher
 EOF
 }

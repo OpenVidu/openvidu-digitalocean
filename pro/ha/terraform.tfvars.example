@@ -34,9 +34,17 @@ stackName = "openvidu-ha"
 # Leave commented to use the default
 # mediaNodeInstanceType = "s-4vcpu-8gb"
 
-# Fixed number of Media Nodes. Default: 4.
-# Leave commented to use the default
-# fixedNumberOfMediaNodes = 4
+# Number of media nodes to create on initial deploy. Default: 1.
+# initialNumberOfMediaNodes = 1
+
+# Minimum number of media nodes (autoscaler never goes below). Default: 1.
+# minNumberOfMediaNodes = 1
+
+# Maximum number of media nodes (autoscaler never goes above). Default: 5.
+# maxNumberOfMediaNodes = 5
+
+# Target average CPU% for autoscaling. Scale out above this, scale in below 70% of this. Default: 50.
+# scaleTargetCPU = 50
 
 # Media Engine. Default: "pion".
 # Available options: "pion", "mediasoup".

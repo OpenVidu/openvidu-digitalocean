@@ -246,7 +246,19 @@ fi
 FINAL_COMMAND="$INSTALL_COMMAND $(printf "%s " "$${COMMON_ARGS[@]}") $(printf "%s " "$${CERT_ARGS[@]}")"
 
 # Execute installation
-exec bash -c "$FINAL_COMMAND"
+set +e
+MAX_RETRIES=5
+RETRY_COUNT=1
+
+until bash -c "$FINAL_COMMAND"; do
+  echo "Install command failed (attempt $RETRY_COUNT/$MAX_RETRIES)"
+  if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+    echo "Install command failed after $MAX_RETRIES attempts"
+    exit 1
+  fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  sleep 10
+done
 EOF
 
   config_s3_script = <<-EOF

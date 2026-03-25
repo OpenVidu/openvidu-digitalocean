@@ -79,35 +79,29 @@ variable "mediaNodeInstanceType" {
   default     = "s-4vcpu-8gb"
 }
 
-variable "fixedNumberOfMediaNodes" {
-  description = "If greater than 0, the number of media nodes will be fixed to this value"
+variable "initialNumberOfMediaNodes" {
+  description = "Number of initial media nodes to deploy"
   type        = number
-  default     = 4
+  default     = 1
 }
 
-# variable "initialNumberOfMediaNodes" {
-#   description = "Number of initial media nodes to deploy"
-#   type        = number
-#   default     = 1
-# }
+variable "minNumberOfMediaNodes" {
+  description = "Minimum number of media nodes to deploy (for reference, manual scaling required)"
+  type        = number
+  default     = 1
+}
 
-# variable "minNumberOfMediaNodes" {
-#   description = "Minimum number of media nodes to deploy (for reference, manual scaling required)"
-#   type        = number
-#   default     = 1
-# }
+variable "maxNumberOfMediaNodes" {
+  description = "Maximum number of media nodes to deploy (for reference, manual scaling required)"
+  type        = number
+  default     = 5
+}
 
-# variable "maxNumberOfMediaNodes" {
-#   description = "Maximum number of media nodes to deploy (for reference, manual scaling required)"
-#   type        = number
-#   default     = 5
-# }
-
-# variable "scaleTargetCPU" {
-#   description = "Target CPU percentage to scale up or down"
-#   type        = number
-#   default     = 50
-# }
+variable "scaleTargetCPU" {
+  description = "Target CPU percentage to scale up or down"
+  type        = number
+  default     = 50
+}
 
 variable "openviduLicense" {
   description = "Visit https://openvidu.io/account"
