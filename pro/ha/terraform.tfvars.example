@@ -46,6 +46,9 @@ stackName = "openvidu-ha"
 # Target average CPU% for autoscaling. Scale out above this, scale in below 70% of this. Default: 50.
 # scaleTargetCPU = 50
 
+# The number of fixed media nodes that you desire (if > 0 no autoscaling is deployed)
+# fixedNumberOfMediaNodes
+
 # Media Engine. Default: "pion".
 # Available options: "pion", "mediasoup".
 # Leave commented to use the default

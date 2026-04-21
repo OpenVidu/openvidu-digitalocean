@@ -429,8 +429,24 @@ resource "digitalocean_droplet" "openvidu_master_node" {
   user_data = local.user_data_master
 }
 
+# Media Nodes (when fixed mode is enabled)
+resource "digitalocean_droplet" "openvidu_media_nodes" {
+  count  = var.fixedNumberOfMediaNodes
+  name   = "${var.stackName}-media-node-${count.index + 1}"
+  image  = "ubuntu-24-04-x64"
+  region = var.region
+  size   = var.mediaNodeInstanceType
+
+  ssh_keys = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
+  vpc_uuid = digitalocean_vpc.openvidu_vpc.id
+  tags     = ["openvidu", var.stackName, "media-node", digitalocean_tag.media_node_tag.name]
+
+  user_data = local.user_data_media
+}
+
 # Cleanup all media nodes on destroy (created by autoscaler outside Terraform state)
 resource "null_resource" "cleanup_media_nodes" {
+  count = var.fixedNumberOfMediaNodes > 0 ? 0 : 1
   triggers = {
     do_token     = var.doToken
     media_tag    = digitalocean_tag.media_node_tag.name
@@ -457,6 +473,7 @@ resource "null_resource" "cleanup_media_nodes" {
 # -------------- Autoscaler (DO Function) ----------------
 
 resource "null_resource" "deploy_autoscaler_function" {
+  count = var.fixedNumberOfMediaNodes > 0 ? 0 : 1
   triggers = {
     code_hash  = sha256(local.autoscaler_function_code)
     do_token   = var.doToken
@@ -1927,7 +1944,9 @@ echo "installation_complete" > /usr/local/bin/openvidu_install_counter.txt
 systemctl start openvidu || { echo "[OpenVidu] error starting OpenVidu"; exit 1; }
 
 # Tag watcher cron: check every minute if this node should be drained
+if [ "${var.fixedNumberOfMediaNodes}" -eq 0 ]; then
 echo "*/2 * * * * root /usr/local/bin/tag_watcher.sh >> /var/log/tag_watcher.log 2>&1" > /etc/cron.d/tag-watcher
 chmod 644 /etc/cron.d/tag-watcher
+fi
 EOF
 }

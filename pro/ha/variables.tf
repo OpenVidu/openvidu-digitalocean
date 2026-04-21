@@ -103,6 +103,12 @@ variable "scaleTargetCPU" {
   default     = 50
 }
 
+variable "fixedNumberOfMediaNodes" {
+  description = "Fixed number of media nodes to create (0 = use autoscaling)"
+  type        = number
+  default     = 0
+}
+
 variable "openviduLicense" {
   description = "Visit https://openvidu.io/account"
   type        = string
