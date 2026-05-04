@@ -1651,14 +1651,14 @@ CONFIG_S3_EOF
   lsb-release \
   openssl
 
-  AWS_CLI_VERSION=2.34.0
+  AWS_CLI_VERSION=2.34.41
   # Install aws-cli
   curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
   unzip -qq awscliv2.zip
   ./aws/install
   rm -rf awscliv2.zip aws
 
-  DOCTL_VERSION=1.146.0
+  DOCTL_VERSION=1.155.0
   # Install doctl
   cd ~
   wget https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
@@ -1915,14 +1915,14 @@ apt-get update && apt-get install -y \
   lsb-release \
   openssl
 
-AWS_CLI_VERSION=2.34.0
+AWS_CLI_VERSION=2.34.41
 # Install aws-cli
 curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
 unzip -qq awscliv2.zip
 ./aws/install
 rm -rf awscliv2.zip aws
 
-DOCTL_VERSION=1.146.0
+DOCTL_VERSION=1.155.0
 # Install doctl
 cd ~
 wget https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
