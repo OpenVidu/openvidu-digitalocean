@@ -125,7 +125,7 @@ locals {
 #!/bin/bash -x
 set -e
 
-OPENVIDU_VERSION=main
+OPENVIDU_VERSION=3.7.0
 DOMAIN=
 echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
 
