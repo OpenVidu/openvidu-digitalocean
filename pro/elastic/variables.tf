@@ -148,13 +148,13 @@ variable "spaceRegion" {
 }
 
 variable "spacesAccessId" {
-  description = "Access key ID for DigitalOcean Spaces (S3-compatible). Required if spaceName is provided."
+  description = "Access key ID for DigitalOcean Spaces (S3-compatible). Required if spaceName is empty (a new bucket will be created)."
   type        = string
   default     = ""
 }
 
 variable "spacesSecretKey" {
-  description = "Secret access key for DigitalOcean Spaces (S3-compatible). Required if spaceName is provided."
+  description = "Secret access key for DigitalOcean Spaces (S3-compatible). Required if spaceName is empty (a new bucket will be created)."
   type        = string
   default     = ""
 }
