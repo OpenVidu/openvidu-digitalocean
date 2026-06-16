@@ -1658,7 +1658,7 @@ CONFIG_S3_EOF
   ./aws/install
   rm -rf awscliv2.zip aws
 
-  DOCTL_VERSION=v1.162.0
+  DOCTL_VERSION=1.162.0
   # Install doctl
   cd ~
   wget https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
@@ -1922,7 +1922,7 @@ unzip -qq awscliv2.zip
 ./aws/install
 rm -rf awscliv2.zip aws
 
-DOCTL_VERSION=v1.162.0
+DOCTL_VERSION=1.162.0
 # Install doctl
 cd ~
 wget https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
