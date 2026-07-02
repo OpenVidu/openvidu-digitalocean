@@ -15,6 +15,12 @@ variable "stackName" {
   type        = string
 }
 
+variable "vpcIpRange" {
+  description = "VPC CIDR (/24). Empty = auto-derive a unique range from stackName so multiple deployments can run in parallel in the same account+region."
+  type        = string
+  default     = ""
+}
+
 variable "certificateType" {
   description = "[selfsigned] Not recommended for production use. Just for testing purposes or development environments. You don't need a FQDN to use this option. [owncert] Valid for production environments. Use your own certificate. You need a FQDN to use this option. [letsencrypt] Valid for production environments. Can be used with or without a FQDN (if no FQDN is provided, the public IP will be used)."
   type        = string

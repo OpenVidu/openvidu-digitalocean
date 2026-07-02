@@ -2,10 +2,16 @@ resource "random_id" "bucket_suffix" { byte_length = 5 }
 
 # -------------- VPC and Firewalls ----------------
 
+# Per-deployment /24 so multiple elastic/HA stacks can coexist in the same account+region
+# (parallel runs). Auto-derived from stackName; override with var.vpcIpRange if needed.
+locals {
+  vpc_ip_range = var.vpcIpRange != "" ? var.vpcIpRange : "10.${parseint(substr(sha256(var.stackName), 0, 2), 16)}.${parseint(substr(sha256(var.stackName), 2, 2), 16)}.0/24"
+}
+
 resource "digitalocean_vpc" "openvidu_vpc" {
   name     = "${var.stackName}-vpc"
   region   = var.region
-  ip_range = "10.10.10.0/24"
+  ip_range = local.vpc_ip_range
 }
 
 resource "digitalocean_tag" "media_node_tag" {
