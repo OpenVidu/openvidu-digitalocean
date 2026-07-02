@@ -138,8 +138,7 @@ PUBLIC_IP=$(curl -s http://169.254.169.254/metadata/v1/floating_ip/ipv4/ip_addre
 
 if [[ "${var.domainName}" == "" ]]; then
   [ ! -d "/usr/share/openvidu" ] && mkdir -p /usr/share/openvidu
-  RANDOM_DOMAIN_STRING=$(tr -dc 'a-z' < /dev/urandom | head -c 8)
-  DOMAIN="openvidu-$RANDOM_DOMAIN_STRING-$(echo $PUBLIC_IP | tr '.' '-').sslip.io"
+  DOMAIN="$PUBLIC_IP"
 else
   DOMAIN="${var.domainName}"
 fi
