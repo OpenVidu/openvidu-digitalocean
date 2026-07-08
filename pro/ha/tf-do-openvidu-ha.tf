@@ -717,6 +717,13 @@ if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
   fi
   DOMAIN="$(/usr/local/bin/store_secret.sh save DOMAIN_NAME "$DOMAIN")"
 
+  # Publish URLs early (phase-2) so they are available before after_install runs
+  /usr/local/bin/store_secret.sh save OPENVIDU_URL "https://$DOMAIN/"
+  /usr/local/bin/store_secret.sh save LIVEKIT_URL "wss://$DOMAIN/"
+  /usr/local/bin/store_secret.sh save DASHBOARD_URL "https://$DOMAIN/dashboard/"
+  /usr/local/bin/store_secret.sh save GRAFANA_URL "https://$DOMAIN/grafana/"
+  /usr/local/bin/store_secret.sh save MINIO_URL "https://$DOMAIN/minio-console/"
+
   # Meet initial admin user and password
   MEET_INITIAL_ADMIN_USER="$(/usr/local/bin/store_secret.sh save MEET_INITIAL_ADMIN_USER "admin")"
   if [[ "${var.initialMeetAdminPassword}" != '' ]]; then
@@ -944,6 +951,9 @@ EXTERNAL_S3_REGION="${var.spaceRegion}"
 EXTERNAL_S3_PATH_STYLE_ACCESS="true"
 EXTERNAL_S3_BUCKET_APP_DATA="${var.spaceAppDataName == "" ? digitalocean_spaces_bucket.openvidu_space_appdata[0].name : var.spaceAppDataName}"
 EXTERNAL_S3_BUCKET_CLUSTER_DATA="${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}"
+
+# Wait until openvidu.env exists and has the keys the seds target (bounded, additive)
+for i in $(seq 1 60); do [ -f "$${CLUSTER_CONFIG_DIR}/openvidu.env" ] && grep -q "^EXTERNAL_S3_ENDPOINT=" "$${CLUSTER_CONFIG_DIR}/openvidu.env" && break; sleep 5; done
 
 sed -i "s|EXTERNAL_S3_ENDPOINT=.*|EXTERNAL_S3_ENDPOINT=$EXTERNAL_S3_ENDPOINT|" "$${CLUSTER_CONFIG_DIR}/openvidu.env"
 sed -i "s|EXTERNAL_S3_REGION=.*|EXTERNAL_S3_REGION=$EXTERNAL_S3_REGION|" "$${CLUSTER_CONFIG_DIR}/openvidu.env"
