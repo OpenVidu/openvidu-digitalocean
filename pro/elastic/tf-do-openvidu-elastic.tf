@@ -251,13 +251,6 @@ resource "digitalocean_droplet" "openvidu_master_node" {
   user_data = local.user_data_master
 }
 
-# Master Node IP
-resource "digitalocean_reserved_ip" "master_public_ip" {
-  droplet_id = digitalocean_droplet.openvidu_master_node.id
-  region     = var.region
-  depends_on = [digitalocean_droplet.openvidu_master_node]
-}
-
 # Media Nodes (when fixed mode is enabled)
 resource "digitalocean_droplet" "openvidu_media_nodes" {
   count  = var.fixedNumberOfMediaNodes
@@ -513,10 +506,7 @@ mkdir -p /opt/openvidu
 touch /opt/openvidu/secrets.env
 
 # Get IPs using DO metadata
-PUBLIC_IP=$(curl -s http://169.254.169.254/metadata/v1/floating_ip/ipv4/ip_address)
-if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" == "null" ]; then
-  PUBLIC_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
-fi
+PUBLIC_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
 MASTER_NODE_PRIVATE_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address)
 
 if [[ "${var.domainName}" == "" ]]; then
@@ -627,26 +617,6 @@ FINAL_COMMAND="$INSTALL_COMMAND $(printf "%s " "$${COMMON_ARGS[@]}") $(printf "%
 
 # Execute installation
 set +e
-
-# --- Reserved-IP Let's Encrypt cert race guard (letsencrypt + auto-derived IP domain only; MASTER node) ---
-# DO's reserved-IP routing lags ~4 min behind metadata 'active=true'. If Caddy requests the LE cert during
-# that window the ACME HTTP-01 challenge (LE -> reserved IP) fails, and repeated early failures can trip LE's
-# authz rate limit so the cert never issues within the deploy's wait window. The droplet CANNOT self-test
-# external routability (a packet to its own reserved IP hairpins locally through DO's anchor), so we simply
-# hold the install until the droplet has been up long enough to be past DO's routing window, then let Caddy
-# request the cert once. Deterministic + bounded; raise CERT_GUARD_MIN_UPTIME if a region routes slower.
-if [[ "${var.certificateType}" == "letsencrypt" && "${var.domainName}" == "" ]]; then
-  CERT_GUARD_MIN_UPTIME=300
-  UP=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
-  WAIT=$((CERT_GUARD_MIN_UPTIME - UP))
-  if [ "$WAIT" -gt 0 ]; then
-    echo "[cert-guard] uptime $UP s < $CERT_GUARD_MIN_UPTIME s: waiting $WAIT s for reserved-IP routing before Caddy requests the cert"
-    sleep "$WAIT"
-  else
-    echo "[cert-guard] uptime $UP s past guard threshold: reserved IP should be routable, proceeding"
-  fi
-fi
-# --- end cert race guard ---
 
 MAX_RETRIES=5
 RETRY_COUNT=1
