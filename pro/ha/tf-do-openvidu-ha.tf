@@ -588,9 +588,6 @@ resource "null_resource" "deploy_autoscaler_function" {
 
       echo "Trigger $TRIGGER created."
 
-      # === 5. Bootstrap invocation ===
-      # Invoke the action once now so the cluster reaches its minimum/initial size
-      # immediately instead of waiting for the first cron tick (up to 4 minutes).
       do_curl -X POST \
         -H "Authorization: Basic $OW_AUTH" -H "$CT" \
         -d '{}' \
@@ -682,11 +679,8 @@ resource "digitalocean_spaces_bucket" "openvidu_space_clusterdata" {
 
 resource "digitalocean_spaces_key" "openvidu_spaces_key" {
   name = "${var.stackName}-spaces-key"
-  # TODO(scoping): the DO API only accepts "fullaccess" as a GLOBAL grant — per-bucket
-  # fullaccess returns 400 "Invalid Grant Combination" and per-bucket readwrite was
-  # rejected as well ("invalid grant", likely requires pre-existing buckets). Scoping
-  # this key down needs its own investigation (create-order + verifying the whole
-  # stack works with readwrite), so the original account-wide grant stays for now.
+  # TODO(scoping): DO API only accepts "fullaccess" as a GLOBAL grant, per-bucket grants
+  # are rejected; scoping this down needs investigation, so the account-wide grant stays.
   grant {
     bucket     = ""
     permission = "fullaccess"
@@ -718,8 +712,6 @@ MASTER_NODE_PRIVATE_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/p
 MASTER_NODE_NAME=$(curl -s http://169.254.169.254/metadata/v1/hostname)
 MASTER_NODE_NUMBER=$(echo "$MASTER_NODE_NAME" | rev | cut -d'-' -f1 | rev)
 
-# Publish this node's private IP to a dedicated coordination object.
-# A distinct key per node means concurrent writes never collide (no read-modify-write race).
 echo "$MASTER_NODE_PRIVATE_IP" > /opt/openvidu/master_node_private_ip
 COORD_UPLOADED=false
 for i in $(seq 1 60); do
@@ -782,13 +774,10 @@ if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
   OPENVIDU_PRO_LICENSE="$(/usr/local/bin/store_secret.sh save OPENVIDU_PRO_LICENSE "${var.openviduLicense}")"
   OPENVIDU_RTC_ENGINE="$(/usr/local/bin/store_secret.sh save OPENVIDU_RTC_ENGINE "${var.rtcEngine}")"
   OPENVIDU_VERSION="$(/usr/local/bin/store_secret.sh save OPENVIDU_VERSION "$OPENVIDU_VERSION")"
-  # Master 1 is the single writer of secrets.env. IPs live in separate coordination
-  # objects, so secrets.env carries no IPs. Mark generation complete and upload once.
   /usr/local/bin/store_secret.sh save ALL_SECRETS_GENERATED "true"
   /usr/local/bin/store_secret.sh fullsave
 fi
 
-# Gate 1: wait until master 1 has generated and uploaded secrets.env (bounded poll).
 SECRETS_READY=false
 for i in $(seq 1 360); do
   if aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/secrets.env \
@@ -807,7 +796,6 @@ if [ "$SECRETS_READY" != "true" ]; then
   exit 1
 fi
 
-# Gate 2: wait until all 4 master IP coordination objects exist, then build the ordered list.
 MASTER_NODE_PRIVATE_IPS=""
 IPS_READY=false
 for i in $(seq 1 360); do
@@ -851,7 +839,6 @@ ENABLED_MODULES=$(grep '^ENABLED_MODULES=' /opt/openvidu/secrets.env | cut -d'='
 
 
 
-# Download the installer to a file (robust against transient CDN/network errors)
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_master_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
   -o "$INSTALLER_SCRIPT" \
@@ -1520,8 +1507,7 @@ def main(args):
         result["nodes"] = n
         log(f"Total media nodes: {n}")
 
-        # Ensure minimum. On bootstrap (n == 0) jump straight to the target size
-        # max(MIN_NODES, INITIAL_NODES); afterwards the floor is just MIN_NODES.
+        # Ensure minimum
         floor = max(MIN_NODES, INITIAL_NODES) if n == 0 else MIN_NODES
         if n < floor:
             log(f"DECISION: scale-out-min (have {n}, need {floor})")
@@ -1696,7 +1682,6 @@ CONFIG_S3_EOF
   AWS_CLI_VERSION=2.35.5
   DOCTL_VERSION=1.162.0
 
-  # Install aws-cli and doctl in parallel
   install_aws_cli() {
     curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip
     unzip -qq /tmp/awscliv2.zip -d /tmp
@@ -1749,10 +1734,6 @@ CONFIG_S3_EOF
 #!/bin/bash
 export HOME="/root"
 doctl auth init -t "${var.doToken}"
-# Poll for the load balancer IP: the LB and the droplets are created in parallel,
-# so the LB may not have an IP yet on first boot. Bounded retry loop inside the
-# script (portable across systemd versions) instead of a Restart= directive on a
-# oneshot unit.
 LB_IP=""
 for i in $(seq 1 60); do
   LB_IP=$(doctl compute load-balancer list --format Name,IP --no-header | awk -v n="${var.stackName}-lb" '$1==n {print $2}')
@@ -1765,8 +1746,7 @@ if [ -z "$LB_IP" ]; then
   echo "ERROR: load balancer ${var.stackName}-lb has no IP after polling"
   exit 1
 fi
-# '|| true' is intentional: on reboot the route already exists and 'ip route add'
-# fails with "RTNETLINK answers: File exists", which must not abort the unit.
+# '|| true': route already exists on reboot
 ip route add to local $LB_IP dev eth0 || true
 NLB_SCRIPT_EOF
   chmod +x /usr/local/bin/configure-nlb.sh
@@ -1780,7 +1760,7 @@ After=network.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# The script polls up to 10 minutes for the LB IP; default oneshot timeout (90s) would kill it
+# Default oneshot timeout (90s) would kill the up-to-10-min LB IP poll
 TimeoutStartSec=660
 ExecStart=/usr/local/bin/configure-nlb.sh
 
@@ -1788,7 +1768,7 @@ ExecStart=/usr/local/bin/configure-nlb.sh
 WantedBy=multi-user.target
 NLB_SERVICE_EOF
 
-  # Enable and start the service (non-blocking: the IP poll must not stall install)
+  # Enable and start the service
   systemctl enable configure-nlb
   systemctl start --no-block configure-nlb
 
@@ -1801,8 +1781,7 @@ NLB_SERVICE_EOF
   # Start OpenVidu
   systemctl start openvidu || { echo "[OpenVidu] error starting OpenVidu"; exit 1; }
 
-  # Update shared secrets (only for master node 1). after_install.sh only reads the
-  # already-written /opt/openvidu/secrets.env and re-publishes URLs, so no wait is needed.
+  # Update shared secrets (only for master node 1)
   MASTER_NODE_NAME=$(curl -s http://169.254.169.254/metadata/v1/hostname)
   MASTER_NODE_NUMBER=$(echo "$MASTER_NODE_NAME" | rev | cut -d'-' -f1 | rev)
   if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
@@ -1866,8 +1845,6 @@ DOMAIN=$(grep '^DOMAIN_NAME=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 OPENVIDU_VERSION=$(grep '^OPENVIDU_VERSION=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 OPENVIDU_PRO_LICENSE=$(grep '^OPENVIDU_PRO_LICENSE=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-# Read the 4 master IP coordination objects (bounded poll). IPs are no longer stored
-# in secrets.env; each master publishes its IP to a dedicated object.
 MASTER_NODE_PRIVATE_IPS=""
 IPS_READY=false
 for i in $(seq 1 360); do
@@ -1887,7 +1864,6 @@ if [ "$IPS_READY" != "true" ]; then
   exit 1
 fi
 
-# Download the installer to a file (robust against transient CDN/network errors)
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_media_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
   -o "$INSTALLER_SCRIPT" \
@@ -2006,7 +1982,6 @@ apt-get update && apt-get install -y \
 AWS_CLI_VERSION=2.35.5
 DOCTL_VERSION=1.162.0
 
-# Install aws-cli and doctl in parallel
 install_aws_cli() {
   curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip
   unzip -qq /tmp/awscliv2.zip -d /tmp
