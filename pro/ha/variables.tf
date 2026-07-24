@@ -86,7 +86,7 @@ variable "mediaNodeInstanceType" {
 }
 
 variable "initialNumberOfMediaNodes" {
-  description = "Number of initial media nodes to deploy"
+  description = "Number of media nodes to create at bootstrap. On its first run (when no media nodes exist yet) the autoscaler brings the cluster straight to max(minNumberOfMediaNodes, initialNumberOfMediaNodes); afterwards autoscaling keeps it between min and max based on CPU. Ignored when fixedNumberOfMediaNodes > 0."
   type        = number
   default     = 1
 }

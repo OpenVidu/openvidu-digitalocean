@@ -34,7 +34,9 @@ stackName = "openvidu-ha"
 # Leave commented to use the default
 # mediaNodeInstanceType = "s-4vcpu-8gb"
 
-# Number of media nodes to create on initial deploy. Default: 1.
+# Media nodes to create at bootstrap. On its first run the autoscaler brings the
+# cluster straight to max(minNumberOfMediaNodes, initialNumberOfMediaNodes); after
+# that, autoscaling keeps it between min and max based on CPU. Default: 1.
 # initialNumberOfMediaNodes = 1
 
 # Minimum number of media nodes (autoscaler never goes below). Default: 1.
