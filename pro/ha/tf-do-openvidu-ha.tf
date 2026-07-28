@@ -586,7 +586,13 @@ resource "null_resource" "deploy_autoscaler_function" {
         }" \
         "$DO_API/functions/namespaces/$NS_ID/triggers" > /dev/null
 
-      echo "Trigger $TRIGGER created. Deployment complete."
+      echo "Trigger $TRIGGER created."
+
+      do_curl -X POST \
+        -H "Authorization: Basic $OW_AUTH" -H "$CT" \
+        -d '{}' \
+        "$API_HOST/api/v1/namespaces/_/actions/autoscaler/check?blocking=false&result=false" > /dev/null
+      echo "Bootstrap invocation triggered. Deployment complete."
     EOT
   }
 
@@ -673,6 +679,8 @@ resource "digitalocean_spaces_bucket" "openvidu_space_clusterdata" {
 
 resource "digitalocean_spaces_key" "openvidu_spaces_key" {
   name = "${var.stackName}-spaces-key"
+  # TODO(scoping): DO API only accepts "fullaccess" as a GLOBAL grant, per-bucket grants
+  # are rejected; scoping this down needs investigation, so the account-wide grant stays.
   grant {
     bucket     = ""
     permission = "fullaccess"
@@ -687,10 +695,6 @@ set -e
 
 OPENVIDU_VERSION=main
 DOMAIN=
-echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
-
-# Install dependencies
-apt-get update && apt-get install -y
 
 # Create counter file for tracking script executions
 echo 1 > /usr/local/bin/openvidu_install_counter.txt
@@ -707,6 +711,24 @@ MASTER_NODE_PRIVATE_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/p
 # Get Master Node Number
 MASTER_NODE_NAME=$(curl -s http://169.254.169.254/metadata/v1/hostname)
 MASTER_NODE_NUMBER=$(echo "$MASTER_NODE_NAME" | rev | cut -d'-' -f1 | rev)
+
+echo "$MASTER_NODE_PRIVATE_IP" > /opt/openvidu/master_node_private_ip
+COORD_UPLOADED=false
+for i in $(seq 1 60); do
+  if aws s3 cp /opt/openvidu/master_node_private_ip \
+    s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-$MASTER_NODE_NUMBER \
+    --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
+    --acl private \
+    --region=${var.spaceRegion}; then
+    COORD_UPLOADED=true
+    break
+  fi
+  sleep 5
+done
+if [ "$COORD_UPLOADED" != "true" ]; then
+  echo "ERROR: could not upload master IP coordination object after 60 attempts"
+  exit 1
+fi
 
 if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
   if [[ "${var.domainName}" == "" ]]; then
@@ -752,76 +774,46 @@ if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
   OPENVIDU_PRO_LICENSE="$(/usr/local/bin/store_secret.sh save OPENVIDU_PRO_LICENSE "${var.openviduLicense}")"
   OPENVIDU_RTC_ENGINE="$(/usr/local/bin/store_secret.sh save OPENVIDU_RTC_ENGINE "${var.rtcEngine}")"
   OPENVIDU_VERSION="$(/usr/local/bin/store_secret.sh save OPENVIDU_VERSION "$OPENVIDU_VERSION")"
-  MASTER_NODE_PRIVATE_IP="$(/usr/local/bin/store_secret.sh save MASTER_NODE_PRIVATE_IP_1 "$MASTER_NODE_PRIVATE_IP")"
+  /usr/local/bin/store_secret.sh save ALL_SECRETS_GENERATED "true"
   /usr/local/bin/store_secret.sh fullsave
-elif [[ "$MASTER_NODE_NUMBER" == "2" ]]; then
-  set +e
-  # Wait until first master node has stores his MASTER_NODE_PRIVATE_IP
-  while true; do
-    if aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/secrets.env \
-      /opt/openvidu/secrets.env \
-      --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
-      --region=${var.spaceRegion}; then
-        /usr/local/bin/store_secret.sh save MASTER_NODE_PRIVATE_IP_2 "$MASTER_NODE_PRIVATE_IP"
-        /usr/local/bin/store_secret.sh fullsave
-        break
-    fi
-    sleep 5
-  done
-  set -e
-elif [[ "$MASTER_NODE_NUMBER" == "3" ]]; then
-  set +e
-  while true; do
-    aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/secrets.env \
-    /opt/openvidu/secrets.env \
-    --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
-    --region=${var.spaceRegion}
-    
-    if grep -q "MASTER_NODE_PRIVATE_IP_2=" /opt/openvidu/secrets.env; then
-      /usr/local/bin/store_secret.sh save MASTER_NODE_PRIVATE_IP_3 "$MASTER_NODE_PRIVATE_IP"
-      /usr/local/bin/store_secret.sh fullsave
-      break
-    fi
-    sleep 5
-  done
-  set -e
-elif [[ "$MASTER_NODE_NUMBER" == "4" ]]; then
-  set +e
-  while true; do
-    aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/secrets.env \
-    /opt/openvidu/secrets.env \
-    --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
-    --region=${var.spaceRegion}
-    
-    if grep -q "MASTER_NODE_PRIVATE_IP_3=" /opt/openvidu/secrets.env; then
-      /usr/local/bin/store_secret.sh save MASTER_NODE_PRIVATE_IP_4 "$MASTER_NODE_PRIVATE_IP"
-      /usr/local/bin/store_secret.sh save ALL_SECRETS_GENERATED "true"
-      /usr/local/bin/store_secret.sh fullsave
-      break
-    fi
-    sleep 5
-  done
-  set -e
 fi
 
-# Wait to the MASTER_NODE_PRIVATE_IP_4 to be preset in secrets.env and then create the list of MASTER_NODE_PRIVATE_IPS
-while true; do
-  aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/secrets.env \
-  /opt/openvidu/secrets.env \
-  --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
-  --region=${var.spaceRegion}
+SECRETS_READY=false
+for i in $(seq 1 360); do
+  if aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/secrets.env \
+    /opt/openvidu/secrets.env \
+    --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
+    --region=${var.spaceRegion} 2>/dev/null; then
+    if grep -q "^ALL_SECRETS_GENERATED=true" /opt/openvidu/secrets.env; then
+      SECRETS_READY=true
+      break
+    fi
+  fi
+  sleep 5
+done
+if [ "$SECRETS_READY" != "true" ]; then
+  echo "ERROR: secrets.env with ALL_SECRETS_GENERATED=true not available after timeout"
+  exit 1
+fi
 
-  if grep -q "MASTER_NODE_PRIVATE_IP_4=" /opt/openvidu/secrets.env; then
-    MASTER_NODE_PRIVATE_IPS=""
-    MASTER_NODE_PRIVATE_IP_1=$(grep '^MASTER_NODE_PRIVATE_IP_1=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-      MASTER_NODE_PRIVATE_IP_2=$(grep '^MASTER_NODE_PRIVATE_IP_2=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-      MASTER_NODE_PRIVATE_IP_3=$(grep '^MASTER_NODE_PRIVATE_IP_3=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-      MASTER_NODE_PRIVATE_IP_4=$(grep '^MASTER_NODE_PRIVATE_IP_4=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-      MASTER_NODE_PRIVATE_IPS="$MASTER_NODE_PRIVATE_IP_1,$MASTER_NODE_PRIVATE_IP_2,$MASTER_NODE_PRIVATE_IP_3,$MASTER_NODE_PRIVATE_IP_4"
+MASTER_NODE_PRIVATE_IPS=""
+IPS_READY=false
+for i in $(seq 1 360); do
+  IP1=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-1 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  IP2=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-2 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  IP3=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-3 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  IP4=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-4 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  if [ -n "$IP1" ] && [ -n "$IP2" ] && [ -n "$IP3" ] && [ -n "$IP4" ]; then
+    MASTER_NODE_PRIVATE_IPS="$IP1,$IP2,$IP3,$IP4"
+    IPS_READY=true
     break
   fi
   sleep 5
 done
+if [ "$IPS_READY" != "true" ]; then
+  echo "ERROR: not all master IP coordination objects available after timeout"
+  exit 1
+fi
 
 DOMAIN=$(grep '^DOMAIN_NAME=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 OPENVIDU_PRO_LICENSE=$(grep '^OPENVIDU_PRO_LICENSE=' /opt/openvidu/secrets.env | cut -d'=' -f2)
@@ -847,8 +839,17 @@ ENABLED_MODULES=$(grep '^ENABLED_MODULES=' /opt/openvidu/secrets.env | cut -d'='
 
 
 
+INSTALLER_SCRIPT="/opt/openvidu/install_ov_master_node.sh"
+if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+  -o "$INSTALLER_SCRIPT" \
+  "http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_master_node.sh"; then
+  echo "ERROR: failed to download master node installer"
+  exit 1
+fi
+[ -s "$INSTALLER_SCRIPT" ] || { echo "ERROR: downloaded master node installer is empty"; exit 1; }
+
 # Build install command
-INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_master_node.sh)"
+INSTALL_COMMAND="sh $INSTALLER_SCRIPT"
 
 # Common arguments
 COMMON_ARGS=(
@@ -1231,13 +1232,20 @@ EOF
 
   check_app_ready_script_master = <<-EOF
 #!/bin/bash
-while true; do
-  HTTP_STATUS=$(curl -Ik http://localhost:7880/health/caddy | head -n1 | awk '{print $2}')
-  if [ $HTTP_STATUS == 200 ]; then
+MAX_RETRIES=240
+RETRY_COUNT=0
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  HTTP_STATUS=$(curl -Ik http://localhost:7880/health/caddy 2>/dev/null | head -n1 | awk '{print $2}')
+  if [ "$HTTP_STATUS" == "200" ]; then
     break
   fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
   sleep 5
 done
+if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+  echo "ERROR: OpenVidu app not ready after $MAX_RETRIES attempts"
+  exit 1
+fi
 EOF
 
   restart_script_master = <<-EOF
@@ -1275,6 +1283,7 @@ SSH_KEY_ID    = "${digitalocean_ssh_key.openvidu_ssh_key_do.id}"
 STACK_NAME    = "${var.stackName}"
 MIN_NODES     = int("${var.minNumberOfMediaNodes}")
 MAX_NODES     = int("${var.maxNumberOfMediaNodes}")
+INITIAL_NODES = int("${var.initialNumberOfMediaNodes}")
 TARGET_CPU    = float("${var.scaleTargetCPU}")
 USER_DATA     = base64.b64decode("${base64encode(local.user_data_media)}").decode()
 
@@ -1486,7 +1495,7 @@ def main(args):
     """DO Functions entry point — invoked every 5 minutes by scheduled trigger."""
     log("=" * 60)
     log(f"Autoscaler invoked | stack={STACK_NAME} region={REGION}")
-    log(f"Config: min={MIN_NODES} max={MAX_NODES} target_cpu={TARGET_CPU}%")
+    log(f"Config: min={MIN_NODES} initial={INITIAL_NODES} max={MAX_NODES} target_cpu={TARGET_CPU}%")
     log(f"Tags: media='{MEDIA_TAG}' draining='{DRAINING_TAG}'")
     log("=" * 60)
 
@@ -1499,9 +1508,13 @@ def main(args):
         log(f"Total media nodes: {n}")
 
         # Ensure minimum
-        if n < MIN_NODES:
-            log(f"DECISION: scale-out-min (have {n}, need {MIN_NODES})")
-            created = create_node()
+        floor = max(MIN_NODES, INITIAL_NODES) if n == 0 else MIN_NODES
+        if n < floor:
+            log(f"DECISION: scale-out-min (have {n}, need {floor})")
+            created = 0
+            for _ in range(floor - n):
+                if create_node():
+                    created += 1
             result["action"] = "scale-out-min"
             result["created"] = created
             log("=" * 60)
@@ -1667,19 +1680,33 @@ CONFIG_S3_EOF
   openssl
 
   AWS_CLI_VERSION=2.35.5
-  # Install aws-cli
-  curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
-  unzip -qq awscliv2.zip
-  ./aws/install
-  rm -rf awscliv2.zip aws
-
   DOCTL_VERSION=1.162.0
-  # Install doctl
-  cd ~
-  wget https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
-  tar xf ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
-  mv ~/doctl /usr/local/bin
-  rm -f ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
+
+  install_aws_cli() {
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip
+    unzip -qq /tmp/awscliv2.zip -d /tmp
+    /tmp/aws/install
+    rm -rf /tmp/awscliv2.zip /tmp/aws
+  }
+  install_doctl() {
+    curl -fsSL "https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz" -o /tmp/doctl.tar.gz
+    tar xf /tmp/doctl.tar.gz -C /tmp
+    mv /tmp/doctl /usr/local/bin
+    rm -f /tmp/doctl.tar.gz
+  }
+
+  install_aws_cli &
+  PID_AWS=$!
+  install_doctl &
+  PID_DOCTL=$!
+
+  CLI_FAILED=0
+  wait $PID_AWS || CLI_FAILED=1
+  wait $PID_DOCTL || CLI_FAILED=1
+  if [ "$CLI_FAILED" -ne 0 ]; then
+    echo "[OpenVidu] error installing AWS CLI or doctl"
+    exit 1
+  fi
 
   export HOME="/root"
 
@@ -1702,21 +1729,25 @@ CONFIG_S3_EOF
   
   rm -f /tmp/openvidu_ssh_key_ha.pem
 
-  # Add route to load balancer
-  LB_IP=$(doctl compute load-balancer list --format IP --no-header | grep -v "^$" | head -n1)
-  if [ -n "$LB_IP" ]; then
-    ip route add to local $LB_IP dev eth0 || true
-  fi
-
   # Create script for network load balancer configuration
   cat > /usr/local/bin/configure-nlb.sh << 'NLB_SCRIPT_EOF'
 #!/bin/bash
 export HOME="/root"
 doctl auth init -t "${var.doToken}"
-LB_IP=$(doctl compute load-balancer list --format IP --no-header | grep -v "^$" | head -n1)
-if [ -n "$LB_IP" ]; then
-  ip route add to local $LB_IP dev eth0 || true
+LB_IP=""
+for i in $(seq 1 60); do
+  LB_IP=$(doctl compute load-balancer list --format Name,IP --no-header | awk -v n="${var.stackName}-lb" '$1==n {print $2}')
+  if [ -n "$LB_IP" ]; then
+    break
+  fi
+  sleep 10
+done
+if [ -z "$LB_IP" ]; then
+  echo "ERROR: load balancer ${var.stackName}-lb has no IP after polling"
+  exit 1
 fi
+# '|| true': route already exists on reboot
+ip route add to local $LB_IP dev eth0 || true
 NLB_SCRIPT_EOF
   chmod +x /usr/local/bin/configure-nlb.sh
 
@@ -1729,6 +1760,8 @@ After=network.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Default oneshot timeout (90s) would kill the up-to-10-min LB IP poll
+TimeoutStartSec=660
 ExecStart=/usr/local/bin/configure-nlb.sh
 
 [Install]
@@ -1737,7 +1770,7 @@ NLB_SERVICE_EOF
 
   # Enable and start the service
   systemctl enable configure-nlb
-  systemctl start configure-nlb
+  systemctl start --no-block configure-nlb
 
   # Install OpenVidu
   /usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu"; exit 1; }
@@ -1749,7 +1782,6 @@ NLB_SERVICE_EOF
   systemctl start openvidu || { echo "[OpenVidu] error starting OpenVidu"; exit 1; }
 
   # Update shared secrets (only for master node 1)
-  sleep 30 # wait for secrets to be generated
   MASTER_NODE_NAME=$(curl -s http://169.254.169.254/metadata/v1/hostname)
   MASTER_NODE_NUMBER=$(echo "$MASTER_NODE_NAME" | rev | cut -d'-' -f1 | rev)
   if [[ "$MASTER_NODE_NUMBER" == "1" ]]; then
@@ -1772,11 +1804,6 @@ EOF
   install_script_media = <<-EOF
 #!/bin/bash -x
 set -e
-
-# Install dependencies
-echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
-
-apt-get update && apt-get install -y
 
 # Get secret from s3 bucket with active wait
 export AWS_ACCESS_KEY_ID="${digitalocean_spaces_key.openvidu_spaces_key.access_key}"
@@ -1818,14 +1845,36 @@ DOMAIN=$(grep '^DOMAIN_NAME=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 OPENVIDU_VERSION=$(grep '^OPENVIDU_VERSION=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 OPENVIDU_PRO_LICENSE=$(grep '^OPENVIDU_PRO_LICENSE=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-MASTER_NODE_PRIVATE_IP_1=$(grep '^MASTER_NODE_PRIVATE_IP_1=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-MASTER_NODE_PRIVATE_IP_2=$(grep '^MASTER_NODE_PRIVATE_IP_2=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-MASTER_NODE_PRIVATE_IP_3=$(grep '^MASTER_NODE_PRIVATE_IP_3=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-MASTER_NODE_PRIVATE_IP_4=$(grep '^MASTER_NODE_PRIVATE_IP_4=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-MASTER_NODE_PRIVATE_IPS="$MASTER_NODE_PRIVATE_IP_1,$MASTER_NODE_PRIVATE_IP_2,$MASTER_NODE_PRIVATE_IP_3,$MASTER_NODE_PRIVATE_IP_4"
+MASTER_NODE_PRIVATE_IPS=""
+IPS_READY=false
+for i in $(seq 1 360); do
+  IP1=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-1 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  IP2=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-2 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  IP3=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-3 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  IP4=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-4 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
+  if [ -n "$IP1" ] && [ -n "$IP2" ] && [ -n "$IP3" ] && [ -n "$IP4" ]; then
+    MASTER_NODE_PRIVATE_IPS="$IP1,$IP2,$IP3,$IP4"
+    IPS_READY=true
+    break
+  fi
+  sleep 5
+done
+if [ "$IPS_READY" != "true" ]; then
+  echo "ERROR: not all master IP coordination objects available after timeout"
+  exit 1
+fi
+
+INSTALLER_SCRIPT="/opt/openvidu/install_ov_media_node.sh"
+if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+  -o "$INSTALLER_SCRIPT" \
+  "http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_media_node.sh"; then
+  echo "ERROR: failed to download media node installer"
+  exit 1
+fi
+[ -s "$INSTALLER_SCRIPT" ] || { echo "ERROR: downloaded media node installer is empty"; exit 1; }
 
 # Build install command for media node
-INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_media_node.sh)"
+INSTALL_COMMAND="sh $INSTALLER_SCRIPT"
 
 # Media node arguments
 COMMON_ARGS=(
@@ -1931,19 +1980,33 @@ apt-get update && apt-get install -y \
   openssl
 
 AWS_CLI_VERSION=2.35.5
-# Install aws-cli
-curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
-unzip -qq awscliv2.zip
-./aws/install
-rm -rf awscliv2.zip aws
-
 DOCTL_VERSION=1.162.0
-# Install doctl
-cd ~
-wget https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
-tar xf ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
-mv ~/doctl /usr/local/bin
-rm -f ~/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz
+
+install_aws_cli() {
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip
+  unzip -qq /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+}
+install_doctl() {
+  curl -fsSL "https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VERSION}/doctl-$${DOCTL_VERSION}-linux-amd64.tar.gz" -o /tmp/doctl.tar.gz
+  tar xf /tmp/doctl.tar.gz -C /tmp
+  mv /tmp/doctl /usr/local/bin
+  rm -f /tmp/doctl.tar.gz
+}
+
+install_aws_cli &
+PID_AWS=$!
+install_doctl &
+PID_DOCTL=$!
+
+CLI_FAILED=0
+wait $PID_AWS || CLI_FAILED=1
+wait $PID_DOCTL || CLI_FAILED=1
+if [ "$CLI_FAILED" -ne 0 ]; then
+  echo "[OpenVidu] error installing AWS CLI or doctl"
+  exit 1
+fi
 
 export HOME="/root"
 
