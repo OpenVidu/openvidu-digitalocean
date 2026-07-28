@@ -679,11 +679,14 @@ resource "digitalocean_spaces_bucket" "openvidu_space_clusterdata" {
 
 resource "digitalocean_spaces_key" "openvidu_spaces_key" {
   name = "${var.stackName}-spaces-key"
-  # TODO(scoping): DO API only accepts "fullaccess" as a GLOBAL grant, per-bucket grants
-  # are rejected; scoping this down needs investigation, so the account-wide grant stays.
+  # Scoped per-bucket (readwrite) on each effective bucket; .name refs imply create-before-grant
   grant {
-    bucket     = ""
-    permission = "fullaccess"
+    bucket     = var.spaceAppDataName == "" ? digitalocean_spaces_bucket.openvidu_space_appdata[0].name : var.spaceAppDataName
+    permission = "readwrite"
+  }
+  grant {
+    bucket     = var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName
+    permission = "readwrite"
   }
 }
 
@@ -718,7 +721,6 @@ for i in $(seq 1 60); do
   if aws s3 cp /opt/openvidu/master_node_private_ip \
     s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-$MASTER_NODE_NUMBER \
     --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
-    --acl private \
     --region=${var.spaceRegion}; then
     COORD_UPLOADED=true
     break
@@ -1225,7 +1227,6 @@ elif [[ "$MODE" == "fullsave" ]]; then
       aws s3 cp /opt/openvidu/secrets.env \
         s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/secrets.env \
         --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
-        --acl private \
         --region=${var.spaceRegion}
 fi
 EOF
@@ -1574,8 +1575,8 @@ def main(args):
                 tcpu  = 0.0
             if tid:
                 log(f"  Selected node to drain: {tid} ({tname}) CPU={tcpu}%")
-                untag_res(tid, MEDIA_TAG)
                 tag_res(tid, DRAINING_TAG)
+                untag_res(tid, MEDIA_TAG)
                 result["action"] = "scale-in"
                 result["drained_node"] = {"id": tid, "name": tname, "cpu": tcpu}
             else:
@@ -1724,7 +1725,6 @@ CONFIG_S3_EOF
   aws s3 cp /tmp/openvidu_ssh_key_ha.pem \
   s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/openvidu_ssh_key_ha.pem \
   --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com \
-  --acl private \
   --region=${var.spaceRegion}
   
   rm -f /tmp/openvidu_ssh_key_ha.pem
