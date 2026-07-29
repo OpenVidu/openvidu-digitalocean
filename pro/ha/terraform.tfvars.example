@@ -45,7 +45,7 @@ stackName = "openvidu-ha"
 # Maximum number of media nodes (autoscaler never goes above). Default: 5.
 # maxNumberOfMediaNodes = 5
 
-# Target average CPU% for autoscaling. Scale out above this, scale in below 70% of this. Default: 50.
+# Target average CPU% for autoscaling. Scale out above this value; scale in below it. Default: 50.
 # scaleTargetCPU = 50
 
 # The number of fixed media nodes that you desire (if > 0 no autoscaling is deployed)
