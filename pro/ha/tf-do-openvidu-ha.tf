@@ -1680,8 +1680,8 @@ CONFIG_S3_EOF
   lsb-release \
   openssl
 
-  AWS_CLI_VERSION=2.35.5
-  DOCTL_VERSION=1.162.0
+  AWS_CLI_VERSION=2.36.40
+  DOCTL_VERSION=1.168.0
 
   install_aws_cli() {
     curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip
@@ -1979,8 +1979,8 @@ apt-get update && apt-get install -y \
   lsb-release \
   openssl
 
-AWS_CLI_VERSION=2.35.5
-DOCTL_VERSION=1.162.0
+AWS_CLI_VERSION=2.36.40
+DOCTL_VERSION=1.168.0
 
 install_aws_cli() {
   curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip
