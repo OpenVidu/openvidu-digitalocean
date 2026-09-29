@@ -51,10 +51,10 @@ stackName = "openvidu-elastic"
 # The number of fixed media nodes that you desire (if > 0 no autoscaling is deployed)
 # fixedNumberOfMediaNodes = 0
 
-# Media Engine. Default: "pion".
+# Media Engine. Default: "mediasoup".
 # Available options: "pion", "mediasoup".
 # Leave commented to use the default
-# rtcEngine = "pion"
+# rtcEngine = "mediasoup"
 
 
 # --- Domain and SSL Certificates ---

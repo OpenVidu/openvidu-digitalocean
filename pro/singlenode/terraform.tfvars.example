@@ -30,10 +30,10 @@ stackName = "openvidu-singlenode"
 # Leave commented to use the default
 # instanceType = "s-4vcpu-8gb"
 
-# Media Engine. Default: "pion".
+# Media Engine. Default: "mediasoup".
 # Available options: "pion", "mediasoup".
 # Leave commented to use the default
-# rtcEngine = "pion"
+# rtcEngine = "mediasoup"
 
 
 # --- Domain and SSL Certificates ---
