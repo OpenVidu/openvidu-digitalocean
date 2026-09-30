@@ -92,13 +92,13 @@ variable "initialNumberOfMediaNodes" {
 }
 
 variable "minNumberOfMediaNodes" {
-  description = "Minimum number of media nodes to deploy (for reference, manual scaling required)"
+  description = "Minimum number of media nodes (autoscaler will never scale below this)"
   type        = number
   default     = 1
 }
 
 variable "maxNumberOfMediaNodes" {
-  description = "Maximum number of media nodes to deploy (for reference, manual scaling required)"
+  description = "Maximum number of media nodes (autoscaler will never scale above this)"
   type        = number
   default     = 5
 }

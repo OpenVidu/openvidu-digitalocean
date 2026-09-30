@@ -26,6 +26,10 @@ resource "digitalocean_tag" "draining_tag" {
   name = "${var.stackName}-draining"
 }
 
+resource "digitalocean_tag" "unhealthy_tag" {
+  name = "${var.stackName}-unhealthy"
+}
+
 # External SSH access to Master Nodes
 resource "digitalocean_firewall" "external_master_ssh" {
   name = "${var.stackName}-external-master-ssh"
@@ -454,9 +458,10 @@ resource "digitalocean_droplet" "openvidu_media_nodes" {
 resource "null_resource" "cleanup_media_nodes" {
   count = var.fixedNumberOfMediaNodes > 0 ? 0 : 1
   triggers = {
-    do_token     = var.doToken
-    media_tag    = digitalocean_tag.media_node_tag.name
-    draining_tag = digitalocean_tag.draining_tag.name
+    do_token      = var.doToken
+    media_tag     = digitalocean_tag.media_node_tag.name
+    draining_tag  = digitalocean_tag.draining_tag.name
+    unhealthy_tag = digitalocean_tag.unhealthy_tag.name
   }
 
   provisioner "local-exec" {
@@ -472,6 +477,11 @@ resource "null_resource" "cleanup_media_nodes" {
         -H "Content-Type: application/json" \
         "https://api.digitalocean.com/v2/droplets?tag_name=${self.triggers.draining_tag}"
       echo "Deleted all draining node droplets"
+      curl -s -X DELETE \
+        -H "Authorization: Bearer ${self.triggers.do_token}" \
+        -H "Content-Type: application/json" \
+        "https://api.digitalocean.com/v2/droplets?tag_name=${self.triggers.unhealthy_tag}"
+      echo "Deleted all unhealthy node droplets"
     EOT
   }
 }
@@ -658,6 +668,7 @@ resource "null_resource" "deploy_autoscaler_function" {
     digitalocean_vpc.openvidu_vpc,
     digitalocean_tag.media_node_tag,
     digitalocean_tag.draining_tag,
+    digitalocean_tag.unhealthy_tag,
   ]
 }
 
@@ -1277,6 +1288,7 @@ import urllib.error
 DO_TOKEN      = "${var.doToken}"
 MEDIA_TAG     = "${digitalocean_tag.media_node_tag.name}"
 DRAINING_TAG  = "${digitalocean_tag.draining_tag.name}"
+UNHEALTHY_TAG = "${digitalocean_tag.unhealthy_tag.name}"
 REGION        = "${var.region}"
 SIZE          = "${var.mediaNodeInstanceType}"
 VPC_UUID      = "${digitalocean_vpc.openvidu_vpc.id}"
@@ -1492,6 +1504,74 @@ def untag_res(did, t):
     except Exception as e:
         log(f"    <- error: {e}")
 
+def list_tagged(tag):
+    r = apicall("GET", f"/droplets?tag_name={tag}&per_page=200")
+    return r.get("droplets", []) if r else []
+
+def delete_node(did):
+    """Delete one droplet by id. 204 (deleted) or 404 (already gone) => True;
+    a transient error => False so the caller retries."""
+    url = f"{API}/droplets/{did}"
+    req = urllib.request.Request(url, headers=HDR, method="DELETE")
+    log(f"  Deleting droplet {did} ...")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            log(f"    <- {r.status} OK")
+            return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            log("    <- HTTP 404 (already gone)")
+            return True
+        log(f"    <- HTTP {e.code} ERROR: {e.read().decode()[:200]}")
+        return False
+    except Exception as e:
+        log(f"    <- error: {e}")
+        return False
+
+def replace_unhealthy():
+    """Replace media nodes the on-node watchdog tagged UNHEALTHY_TAG, count-neutrally.
+    Delete the dead node first (retrying; 404 = already gone) so a replacement never
+    pushes the fleet past MAX_NODES and the branch is idempotent (the tag disappears
+    with the droplet). Only replace a node that was still a fleet member (MEDIA_TAG),
+    and only while below MAX_NODES. Returns True if anything was handled so the cycle
+    skips CPU scaling. The Function's 120s budget bounds this; any node left tagged is
+    handled on the next 4-minute cycle."""
+    unhealthy = list_tagged(UNHEALTHY_TAG)
+    if not unhealthy:
+        return False
+    log(f"Found {len(unhealthy)} unhealthy media node(s)")
+    for d in unhealthy:
+        did = d["id"]
+        was_member = MEDIA_TAG in d.get("tags", [])
+        deleted = False
+        for attempt in range(5):
+            if delete_node(did):
+                deleted = True
+                break
+            log(f"  delete of {did} failed (attempt {attempt + 1}/5), retrying in 12s")
+            time.sleep(12)
+        if not deleted:
+            log(f"  ERROR: could not delete unhealthy droplet {did}; leaving it for next cycle")
+            continue
+        if not was_member:
+            log(f"  {did} was already draining/scaled-in (no {MEDIA_TAG} tag); deleted, no replacement")
+            continue
+        n = len(list_nodes())
+        if n >= MAX_NODES:
+            log(f"  at MAX_NODES ({n} >= {MAX_NODES}); not replacing {did}")
+            continue
+        created = False
+        for attempt in range(3):
+            if create_node():
+                created = True
+                break
+            log(f"  replacement create failed (attempt {attempt + 1}/3), retrying in 12s")
+            time.sleep(12)
+        if not created:
+            log(f"  ERROR: FAILED to create a replacement for {did} after 3 attempts; "
+                f"fleet is one media node short until the next cycle")
+    return True
+
 def main(args):
     """DO Functions entry point — invoked every 5 minutes by scheduled trigger."""
     log("=" * 60)
@@ -1503,6 +1583,15 @@ def main(args):
     result = {"action": "none", "nodes": 0, "avg_cpu": 0.0}
 
     try:
+        # Replace unhealthy media nodes first (one concern per cycle): the on-node
+        # watchdog tags a dead node UNHEALTHY_TAG; delete it and, when it was still a
+        # fleet member and we are below MAX_NODES, launch a count-neutral replacement.
+        if replace_unhealthy():
+            result["action"] = "replace-unhealthy"
+            log("=" * 60)
+            result["logs"] = _LOGS
+            return {"body": result}
+
         nodes = list_nodes()
         n = len(nodes)
         result["nodes"] = n
@@ -1864,6 +1953,10 @@ if [ "$IPS_READY" != "true" ]; then
   exit 1
 fi
 
+# Persist the master IPs so the media-health watchdog env file can be written from
+# the user-data after install.sh resolves them.
+echo "$MASTER_NODE_PRIVATE_IPS" > /opt/openvidu/master_node_private_ips
+
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_media_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
   -o "$INSTALLER_SCRIPT" \
@@ -1907,9 +2000,261 @@ until bash -c "$FINAL_COMMAND"; do
 done
 EOF
 
+  media_health_watchdog_script = <<-EOF
+#!/bin/bash
+# OpenVidu Media Node health watchdog.
+#
+# Asks the cloud to replace this Media Node with a new one, keeping the number of
+# Media Nodes, through /usr/local/bin/openvidu-media-replace.sh, when:
+#   - its bootstrap failed (the user-data wrote the bootstrap-failed marker): after a
+#     cool-down, so a persistent failure does not churn nodes and can be inspected,
+#   - its bootstrap did not finish BOOTSTRAP_DEADLINE_SEC after boot,
+#   - LiveKit fails its health check (HTTP 200 on PROBE_URL): for HARD_UNHEALTHY_AFTER_SEC
+#     while it is down (connection refused or closed), or for SOFT_UNHEALTHY_AFTER_SEC
+#     while it answers an error or times out. Soft failures are not counted while the CPU
+#     is saturated (an overloaded LiveKit reports Not Ready), and no failure is counted in
+#     the WARMUP_SEC after openvidu.service (re)started.
+# Nothing is replaced while no master answers a Redis PING (MASTER_ADDRS): a master outage
+# fails the health check of every Media Node at once, and a new node could not bootstrap
+# either. Once requested, the replacement is requested again every REPLACE_RETRY_SEC until
+# the node goes away.
+#
+# Settings: /etc/openvidu/media-health.env (sourced every cycle; MASTER_ADDRS="ip:port ...")
+# Pause:    touch /etc/openvidu/media-health.disabled (drain scripts use /run/openvidu-media-health.paused)
+# Logs:     journalctl -u openvidu-media-health
+#
+# This file is embedded verbatim in CloudFormation !Sub blocks, Bicep strings and
+# Terraform heredocs, so it must never contain a dollar sign or a percent sign followed
+# by an opening brace, nor two opening braces in a row.
+
+STATE_DIR=/var/lib/openvidu-media-health
+INSTALLED_MARKER="$STATE_DIR/installed"
+BOOTSTRAP_FAILED_MARKER="$STATE_DIR/bootstrap-failed"
+REPLACE_SCRIPT=/usr/local/bin/openvidu-media-replace.sh
+ENV_FILE=/etc/openvidu/media-health.env
+PAUSE_FILE=/etc/openvidu/media-health.disabled
+DRAIN_PAUSE_FILE=/run/openvidu-media-health.paused
+
+log() { echo "[media-health] $*"; }
+
+# Seconds since boot: monotonic, unaffected by clock steps
+uptime_sec() { cut -d. -f1 /proc/uptime; }
+
+# Busy CPU percentage since the previous call, in BUSY (0 on the first call)
+cpu_busy() {
+    read -r _ c_user c_nice c_system c_idle c_iowait c_irq c_softirq c_steal _ < /proc/stat
+    total=$((c_user + c_nice + c_system + c_idle + c_iowait + c_irq + c_softirq + c_steal))
+    idle=$((c_idle + c_iowait))
+    BUSY=0
+    if [ -n "$PREV_TOTAL" ] && [ "$total" -gt "$PREV_TOTAL" ]; then
+        BUSY=$((100 * (total - PREV_TOTAL - idle + PREV_IDLE) / (total - PREV_TOTAL)))
+    fi
+    PREV_TOTAL=$total
+    PREV_IDLE=$idle
+}
+
+# openvidu.service entered the active state less than WARMUP_SEC ago
+openvidu_starting() {
+    since=$(systemctl show -p ActiveEnterTimestampMonotonic --value openvidu 2>/dev/null)
+    case "$since" in ''|0|*[!0-9]*) return 1 ;; esac
+    [ $(($(uptime_sec) - since / 1000000)) -lt "$WARMUP_SEC" ]
+}
+
+# A master answers a Redis PING (+PONG, or -NOAUTH when a password is required). A bare
+# TCP connect would also succeed against a wedged Redis.
+master_serving() {
+    [ -n "$MASTER_ADDRS" ] || return 1
+    for addr in $MASTER_ADDRS; do
+        host=$(echo "$addr" | cut -d: -f1)
+        port=$(echo "$addr" | cut -d: -f2)
+        reply=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/$1" && printf "PING\r\n" >&3 && head -c 7 <&3' "$host" "$port" 2>/dev/null)
+        case "$reply" in
+            +PONG*|-NOAUTH*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Request the replacement of this node ($1 = reason). Gated on a master answering, except
+# in the bootstrap phase before the master addresses are known.
+request_replacement() {
+    now=$(uptime_sec)
+    if [ -n "$REQUESTED_AT" ] && [ $((now - REQUESTED_AT)) -lt "$REPLACE_RETRY_SEC" ]; then
+        return
+    fi
+    if [ -n "$MASTER_ADDRS" ] || [ -f "$INSTALLED_MARKER" ]; then
+        if ! master_serving; then
+            if [ -z "$HOLD_LOGGED_AT" ] || [ $((now - HOLD_LOGGED_AT)) -ge 600 ]; then
+                log "$1, but no master answers a Redis PING (MASTER_ADDRS='$MASTER_ADDRS'): not replacing this node"
+                HOLD_LOGGED_AT=$now
+            fi
+            return
+        fi
+    fi
+    log "$1: requesting the replacement of this node"
+    if "$REPLACE_SCRIPT" "$1"; then
+        REQUESTED_AT=$now
+        log "replacement requested"
+    else
+        log "the replacement request failed, retrying in $INTERVAL_SEC s"
+    fi
+}
+
+mkdir -p "$STATE_DIR"
+REQUESTED_AT=""
+HOLD_LOGGED_AT=""
+FAILED_SEEN_AT=""
+FAIL_SINCE=""
+SATURATED=""
+PREV_TOTAL=""
+PREV_IDLE=""
+log "started"
+
+while true; do
+    PROBE_URL=http://127.0.0.1:7880/
+    INTERVAL_SEC=30
+    HARD_UNHEALTHY_AFTER_SEC=300
+    SOFT_UNHEALTHY_AFTER_SEC=600
+    CPU_SATURATED_PCT=90
+    WARMUP_SEC=900
+    BOOTSTRAP_DEADLINE_SEC=5400
+    BOOTSTRAP_FAILURE_COOLDOWN_SEC=600
+    REPLACE_RETRY_SEC=600
+    MASTER_ADDRS=""
+    [ -f "$ENV_FILE" ] && . "$ENV_FILE"
+    NOW=$(uptime_sec)
+    cpu_busy
+
+    if [ -f "$PAUSE_FILE" ] || [ -f "$DRAIN_PAUSE_FILE" ]; then
+        FAIL_SINCE=""
+    elif [ -f "$BOOTSTRAP_FAILED_MARKER" ]; then
+        if [ -z "$FAILED_SEEN_AT" ]; then
+            FAILED_SEEN_AT=$NOW
+            log "bootstrap failed ($(head -c 300 "$BOOTSTRAP_FAILED_MARKER")): replacing this node in $BOOTSTRAP_FAILURE_COOLDOWN_SEC s"
+        fi
+        if [ $((NOW - FAILED_SEEN_AT)) -ge "$BOOTSTRAP_FAILURE_COOLDOWN_SEC" ]; then
+            request_replacement "bootstrap failed: $(head -c 300 "$BOOTSTRAP_FAILED_MARKER")"
+        fi
+    elif [ ! -f "$INSTALLED_MARKER" ]; then
+        if [ "$NOW" -ge "$BOOTSTRAP_DEADLINE_SEC" ]; then
+            request_replacement "bootstrap not finished $BOOTSTRAP_DEADLINE_SEC s after boot"
+        fi
+    elif curl -sf -o /dev/null --connect-timeout 3 --max-time 15 "$PROBE_URL"; then
+        [ -n "$FAIL_SINCE" ] && log "LiveKit healthy again after $((NOW - FAIL_SINCE)) s"
+        FAIL_SINCE=""
+        SATURATED=""
+    else
+        RC=$?
+        case "$RC" in
+            7|52|56) KIND=hard ;;
+            *) KIND=soft ;;
+        esac
+        if openvidu_starting; then
+            FAIL_SINCE=""
+        elif [ "$KIND" = soft ] && [ "$BUSY" -ge "$CPU_SATURATED_PCT" ]; then
+            [ -n "$SATURATED" ] || log "LiveKit not ready (curl exit $RC) with the CPU $BUSY% busy: not counted"
+            SATURATED=1
+            FAIL_SINCE=""
+        else
+            SATURATED=""
+            if [ -z "$FAIL_SINCE" ]; then
+                FAIL_SINCE=$NOW
+                log "LiveKit health check failed (curl exit $RC)"
+            fi
+            LIMIT=$SOFT_UNHEALTHY_AFTER_SEC
+            [ "$KIND" = hard ] && LIMIT=$HARD_UNHEALTHY_AFTER_SEC
+            if [ $((NOW - FAIL_SINCE)) -ge "$LIMIT" ]; then
+                request_replacement "LiveKit unhealthy for $((NOW - FAIL_SINCE)) s (curl exit $RC)"
+            fi
+        fi
+    fi
+    sleep "$INTERVAL_SEC"
+done
+EOF
+
+  media_replace_script_media = <<-EOF
+#!/bin/bash
+# Requests the replacement of THIS media node, keeping the media-node count.
+# Autoscaling mode (fixedNumberOfMediaNodes == 0): tag the droplet <stack>-unhealthy;
+# the autoscaler Function deletes it and launches a replacement. Fixed mode: rebuild
+# the droplet in place (fresh disk, same id and IP, user-data re-runs). Never stops the
+# health watchdog: this script is its child and shares its cgroup.
+
+REASON="$1"
+DO_TOKEN="${var.doToken}"
+UNHEALTHY_TAG="${digitalocean_tag.unhealthy_tag.name}"
+FIXED_NODES=${var.fixedNumberOfMediaNodes}
+IMAGE=ubuntu-24-04-x64
+API=https://api.digitalocean.com/v2
+
+mkdir -p /var/lib/openvidu-media-health
+echo "$(date -u +%FT%TZ) $REASON" >> /var/lib/openvidu-media-health/replace-requests.log
+touch /run/openvidu-unhealthy
+
+SELF_ID=$(curl -s http://169.254.169.254/metadata/v1/id)
+if [ -z "$SELF_ID" ]; then
+  echo "[media-replace] could not read this droplet's id from metadata"
+  exit 1
+fi
+
+# POST to the DO API, retrying transient failures; returns 0 once accepted.
+do_post() {
+  n=0
+  while [ "$n" -lt 5 ]; do
+    if curl -sf -X POST \
+      -H "Authorization: Bearer $DO_TOKEN" \
+      -H "Content-Type: application/json" "$@"; then
+      return 0
+    fi
+    n=$((n + 1))
+    echo "[media-replace] request failed (attempt $n/5), retrying in 12s"
+    sleep 12
+  done
+  return 1
+}
+
+if [ "$FIXED_NODES" -gt 0 ]; then
+  echo "[media-replace] fixed mode: rebuilding droplet $SELF_ID ($REASON)"
+  if do_post "$API/droplets/$SELF_ID/actions" -d "{\"type\":\"rebuild\",\"image\":\"$IMAGE\"}"; then
+    echo "[media-replace] rebuild requested"
+    exit 0
+  fi
+else
+  echo "[media-replace] autoscaling mode: tagging droplet $SELF_ID as $UNHEALTHY_TAG ($REASON)"
+  if do_post "$API/tags/$UNHEALTHY_TAG/resources" -d "{\"resources\":[{\"resource_id\":\"$SELF_ID\",\"resource_type\":\"droplet\"}]}"; then
+    echo "[media-replace] tagged $UNHEALTHY_TAG"
+    exit 0
+  fi
+fi
+
+echo "[media-replace] replacement request FAILED after retries"
+exit 1
+EOF
+
+  media_health_unit = <<-EOF
+[Unit]
+Description=OpenVidu Media Node health watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/openvidu-media-health.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   graceful_shutdown_script_media = <<-EOF
 #!/bin/bash -x
 set -e
+
+# Stop the media-health watchdog first so a node draining for scale-in is never
+# tagged/rebuilt as unhealthy mid-drain (the pause file also covers a lagging stop).
+touch /run/openvidu-media-health.paused
+systemctl stop openvidu-media-health 2>/dev/null || true
 
 echo "Starting graceful shutdown of OpenVidu Media Node..."
 
@@ -1923,6 +2268,12 @@ if [ -x "$(command -v docker)" ]; then
   for agent_container in $(docker ps --filter "label=openvidu-agent=true" --format '{{.Names}}' 2>/dev/null); do
     docker container kill --signal=SIGQUIT "$agent_container" 2>/dev/null || true
   done
+
+  # A node being replaced because it is unhealthy must not wait for sessions: kill
+  # the containers so the wait loop below returns at once.
+  if [ -f /run/openvidu-unhealthy ]; then
+    docker ps -q | xargs -r docker kill >/dev/null 2>&1 || true
+  fi
 
   # Wait for running containers to not be openvidu, ingress, egress or an openvidu agent
   while [ "$(docker ps --filter 'label=openvidu-agent=true' -q 2>/dev/null | wc -l)" -gt 0 ] || \
@@ -1950,6 +2301,15 @@ EOF
 #!/bin/bash -x
 set -eu -o pipefail
 
+# Record a media bootstrap failure so the health watchdog replaces this node after a
+# cool-down, then stop the boot. Every bootstrap failure path below routes through it.
+ov_media_bootstrap_failed() {
+  echo "[OpenVidu] media node bootstrap failed: $1"
+  mkdir -p /var/lib/openvidu-media-health
+  echo "$1" > /var/lib/openvidu-media-health/bootstrap-failed
+  exit 1
+}
+
 # install.sh (media node)
 cat > /usr/local/bin/install.sh << 'INSTALL_MEDIA_EOF'
 ${local.install_script_media}
@@ -1967,6 +2327,23 @@ cat > /usr/local/bin/tag_watcher.sh << 'TAG_WATCHER_EOF'
 ${local.tag_watcher_script_media}
 TAG_WATCHER_EOF
 chmod +x /usr/local/bin/tag_watcher.sh
+
+# openvidu-media-health.sh (media node health watchdog)
+cat > /usr/local/bin/openvidu-media-health.sh << 'MEDIA_HEALTH_EOF'
+${local.media_health_watchdog_script}
+MEDIA_HEALTH_EOF
+chmod +x /usr/local/bin/openvidu-media-health.sh
+
+# openvidu-media-replace.sh (requests this node's replacement, keeping the count)
+cat > /usr/local/bin/openvidu-media-replace.sh << 'MEDIA_REPLACE_EOF'
+${local.media_replace_script_media}
+MEDIA_REPLACE_EOF
+chmod +x /usr/local/bin/openvidu-media-replace.sh
+
+# openvidu-media-health.service (systemd unit for the watchdog)
+cat > /etc/systemd/system/openvidu-media-health.service << 'MEDIA_HEALTH_UNIT_EOF'
+${local.media_health_unit}
+MEDIA_HEALTH_UNIT_EOF
 
 echo "DPkg::Lock::Timeout \"-1\";" > /etc/apt/apt.conf.d/99timeout
 apt-get update && apt-get install -y \
@@ -2004,22 +2381,39 @@ CLI_FAILED=0
 wait $PID_AWS || CLI_FAILED=1
 wait $PID_DOCTL || CLI_FAILED=1
 if [ "$CLI_FAILED" -ne 0 ]; then
-  echo "[OpenVidu] error installing AWS CLI or doctl"
-  exit 1
+  ov_media_bootstrap_failed "AWS CLI or doctl install failed"
 fi
 
 export HOME="/root"
 
 doctl auth init -t "${var.doToken}"
 
+# Start the media-health watchdog now (after the DO CLI/token are ready and before
+# install.sh) so a hung or failed bootstrap is detected and this node is replaced.
+systemctl daemon-reload
+systemctl enable --now openvidu-media-health
+
 # Install OpenVidu Media Node
-/usr/local/bin/install.sh || { echo "[OpenVidu] error installing OpenVidu Media Node"; exit 1; }
+/usr/local/bin/install.sh || ov_media_bootstrap_failed "install.sh failed"
+
+# Media-health watchdog settings: the masters whose Redis this node's LiveKit uses,
+# written before the installed marker so the anti-storm guard is armed at runtime.
+MASTER_NODE_PRIVATE_IPS=$(cat /opt/openvidu/master_node_private_ips 2>/dev/null || echo "")
+[ -n "$MASTER_NODE_PRIVATE_IPS" ] || ov_media_bootstrap_failed "master node private IPs unknown"
+mkdir -p /etc/openvidu
+MASTER_ADDRS=$(echo "$MASTER_NODE_PRIVATE_IPS" | tr ',' ' ' | xargs -n1 | sed 's/$/:7001/' | xargs)
+echo "MASTER_ADDRS=\"$MASTER_ADDRS\"" > /etc/openvidu/media-health.env
 
 # Mark installation as complete
 echo "installation_complete" > /usr/local/bin/openvidu_install_counter.txt
 
 # Start OpenVidu
-systemctl start openvidu || { echo "[OpenVidu] error starting OpenVidu"; exit 1; }
+systemctl start openvidu || ov_media_bootstrap_failed "starting OpenVidu failed"
+
+# Media node is up: mark the health watchdog installed so it switches from bootstrap
+# watch to runtime health checks (after a successful start and the env file).
+mkdir -p /var/lib/openvidu-media-health
+touch /var/lib/openvidu-media-health/installed
 
 # Tag watcher cron: check every minute if this node should be drained
 if [ "${var.fixedNumberOfMediaNodes}" -eq 0 ]; then
