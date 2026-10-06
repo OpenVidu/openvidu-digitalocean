@@ -396,9 +396,9 @@ resource "digitalocean_loadbalancer" "openvidu_lb" {
   }
 
   forwarding_rule {
-    entry_port      = 1935
+    entry_port      = 1945
     entry_protocol  = "tcp"
-    target_port     = 1935
+    target_port     = 1945
     target_protocol = "tcp"
   }
 
