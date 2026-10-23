@@ -569,7 +569,7 @@ ALL_SECRETS_GENERATED="$(/usr/local/bin/store_secret.sh save ALL_SECRETS_GENERAT
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_master_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
   -o "$INSTALLER_SCRIPT" \
-  "http://get.openvidu.io/pro/elastic/$OPENVIDU_VERSION/install_ov_master_node.sh"; then
+  "https://get.openvidu.io/pro/elastic/$OPENVIDU_VERSION/install_ov_master_node.sh"; then
   echo "ERROR: failed to download master node installer"
   exit 1
 fi
@@ -1539,7 +1539,7 @@ OPENVIDU_PRO_LICENSE=$(grep '^OPENVIDU_PRO_LICENSE=' /opt/openvidu/secrets.env |
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_media_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
   -o "$INSTALLER_SCRIPT" \
-  "http://get.openvidu.io/pro/elastic/$OPENVIDU_VERSION/install_ov_media_node.sh"; then
+  "https://get.openvidu.io/pro/elastic/$OPENVIDU_VERSION/install_ov_media_node.sh"; then
   echo "ERROR: failed to download media node installer"
   exit 1
 fi
