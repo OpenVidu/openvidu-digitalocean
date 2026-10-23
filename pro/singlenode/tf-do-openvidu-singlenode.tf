@@ -175,7 +175,7 @@ OPENVIDU_RTC_ENGINE="$(/usr/local/bin/store_secret.sh save OPENVIDU_RTC_ENGINE "
 
 
 # Build install command
-INSTALL_COMMAND="sh <(curl -fsSL http://get.openvidu.io/pro/singlenode/$OPENVIDU_VERSION/install.sh)"
+INSTALL_COMMAND="sh <(curl -fsSL https://get.openvidu.io/pro/singlenode/$OPENVIDU_VERSION/install.sh)"
 
 # Common arguments
 COMMON_ARGS=(

@@ -855,7 +855,7 @@ ENABLED_MODULES=$(grep '^ENABLED_MODULES=' /opt/openvidu/secrets.env | cut -d'='
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_master_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
   -o "$INSTALLER_SCRIPT" \
-  "http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_master_node.sh"; then
+  "https://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_master_node.sh"; then
   echo "ERROR: failed to download master node installer"
   exit 1
 fi
@@ -1960,7 +1960,7 @@ echo "$MASTER_NODE_PRIVATE_IPS" > /opt/openvidu/master_node_private_ips
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_media_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
   -o "$INSTALLER_SCRIPT" \
-  "http://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_media_node.sh"; then
+  "https://get.openvidu.io/pro/ha/$OPENVIDU_VERSION/install_ov_media_node.sh"; then
   echo "ERROR: failed to download media node installer"
   exit 1
 fi
