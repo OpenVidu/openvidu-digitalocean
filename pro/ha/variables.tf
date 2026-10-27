@@ -73,10 +73,16 @@ variable "initialMeetApiKey" {
   }
 }
 
-variable "masterNodesInstanceType" {
-  description = "Specifies the Droplet size for your OpenVidu Master Node"
+variable "masterNodeInstanceType" {
+  description = "Specifies the Droplet size for your OpenVidu Master Nodes"
   type        = string
   default     = "s-4vcpu-8gb"
+}
+
+variable "masterNodesInstanceType" {
+  description = "Deprecated: use masterNodeInstanceType, the name Elastic and the other clouds use. Still honored: a non-empty value takes precedence over masterNodeInstanceType. It will be removed in a future release."
+  type        = string
+  default     = ""
 }
 
 variable "mediaNodeInstanceType" {

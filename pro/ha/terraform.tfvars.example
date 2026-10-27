@@ -28,7 +28,7 @@ stackName = "openvidu-ha"
 
 # Master Node server size (Droplet). Default: s-4vcpu-8gb.
 # Leave commented to use the default
-# masterNodesInstanceType = "s-4vcpu-8gb"
+# masterNodeInstanceType = "s-4vcpu-8gb"
 
 # Media Node server size (Droplet). Default: s-4vcpu-8gb.
 # Leave commented to use the default

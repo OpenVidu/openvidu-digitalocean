@@ -1,3 +1,9 @@
+# masterNodeInstanceType replaced masterNodesInstanceType; the deprecated name still wins
+# when it is set.
+locals {
+  master_node_instance_type = var.masterNodesInstanceType != "" ? var.masterNodesInstanceType : var.masterNodeInstanceType
+}
+
 resource "random_id" "bucket_suffix" { byte_length = 5 }
 
 # -------------- VPC and Firewalls ----------------
@@ -430,7 +436,7 @@ resource "digitalocean_droplet" "openvidu_master_node" {
   name   = "${var.stackName}-master-node-${count.index + 1}"
   image  = "ubuntu-24-04-x64"
   region = var.region
-  size   = var.masterNodesInstanceType
+  size   = local.master_node_instance_type
 
   ssh_keys = [digitalocean_ssh_key.openvidu_ssh_key_do.id]
   vpc_uuid = digitalocean_vpc.openvidu_vpc.id
@@ -809,7 +815,7 @@ if [ "$SECRETS_READY" != "true" ]; then
   exit 1
 fi
 
-MASTER_NODE_PRIVATE_IPS=""
+MASTER_NODE_PRIVATE_IP_LIST=""
 IPS_READY=false
 for i in $(seq 1 360); do
   IP1=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-1 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
@@ -817,7 +823,7 @@ for i in $(seq 1 360); do
   IP3=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-3 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
   IP4=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-4 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
   if [ -n "$IP1" ] && [ -n "$IP2" ] && [ -n "$IP3" ] && [ -n "$IP4" ]; then
-    MASTER_NODE_PRIVATE_IPS="$IP1,$IP2,$IP3,$IP4"
+    MASTER_NODE_PRIVATE_IP_LIST="$IP1,$IP2,$IP3,$IP4"
     IPS_READY=true
     break
   fi
@@ -873,7 +879,7 @@ COMMON_ARGS=(
   "--node-role='master-node'"
   "--external-load-balancer"
   "--internal-tls-termination"
-  "--master-node-private-ip-list='$MASTER_NODE_PRIVATE_IPS'"
+  "--master-node-private-ip-list='$MASTER_NODE_PRIVATE_IP_LIST'"
   "--openvidu-pro-license='$OPENVIDU_PRO_LICENSE'"
   "--domain-name='$DOMAIN'"
   "--enabled-modules='$ENABLED_MODULES'"
@@ -1934,7 +1940,7 @@ DOMAIN=$(grep '^DOMAIN_NAME=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 OPENVIDU_VERSION=$(grep '^OPENVIDU_VERSION=' /opt/openvidu/secrets.env | cut -d'=' -f2)
 OPENVIDU_PRO_LICENSE=$(grep '^OPENVIDU_PRO_LICENSE=' /opt/openvidu/secrets.env | cut -d'=' -f2)
-MASTER_NODE_PRIVATE_IPS=""
+MASTER_NODE_PRIVATE_IP_LIST=""
 IPS_READY=false
 for i in $(seq 1 360); do
   IP1=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-1 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
@@ -1942,7 +1948,7 @@ for i in $(seq 1 360); do
   IP3=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-3 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
   IP4=$(aws s3 cp s3://${var.spaceClusterDataName == "" ? digitalocean_spaces_bucket.openvidu_space_clusterdata[0].name : var.spaceClusterDataName}/coordination/master-ip-4 - --endpoint-url=https://${var.spaceRegion}.digitaloceanspaces.com --region=${var.spaceRegion} 2>/dev/null || echo "")
   if [ -n "$IP1" ] && [ -n "$IP2" ] && [ -n "$IP3" ] && [ -n "$IP4" ]; then
-    MASTER_NODE_PRIVATE_IPS="$IP1,$IP2,$IP3,$IP4"
+    MASTER_NODE_PRIVATE_IP_LIST="$IP1,$IP2,$IP3,$IP4"
     IPS_READY=true
     break
   fi
@@ -1955,7 +1961,7 @@ fi
 
 # Persist the master IPs so the media-health watchdog env file can be written from
 # the user-data after install.sh resolves them.
-echo "$MASTER_NODE_PRIVATE_IPS" > /opt/openvidu/master_node_private_ips
+echo "$MASTER_NODE_PRIVATE_IP_LIST" > /opt/openvidu/master_node_private_ips
 
 INSTALLER_SCRIPT="/opt/openvidu/install_ov_media_node.sh"
 if ! curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
@@ -1976,7 +1982,7 @@ COMMON_ARGS=(
   "--environment=digitalocean"
   "--deployment-type=ha"
   "--node-role=media-node"
-  "--master-node-private-ip-list=$MASTER_NODE_PRIVATE_IPS"
+  "--master-node-private-ip-list=$MASTER_NODE_PRIVATE_IP_LIST"
   "--private-ip=$PRIVATE_IP"
   "--redis-password=$REDIS_PASSWORD"
 )
@@ -2414,10 +2420,10 @@ systemctl enable --now openvidu-media-health
 
 # Media-health watchdog settings: the masters whose Redis this node's LiveKit uses,
 # written before the installed marker so the anti-storm guard is armed at runtime.
-MASTER_NODE_PRIVATE_IPS=$(cat /opt/openvidu/master_node_private_ips 2>/dev/null || echo "")
-[ -n "$MASTER_NODE_PRIVATE_IPS" ] || ov_media_bootstrap_failed "master node private IPs unknown"
+MASTER_NODE_PRIVATE_IP_LIST=$(cat /opt/openvidu/master_node_private_ips 2>/dev/null || echo "")
+[ -n "$MASTER_NODE_PRIVATE_IP_LIST" ] || ov_media_bootstrap_failed "master node private IPs unknown"
 mkdir -p /etc/openvidu
-MASTER_ADDRS=$(echo "$MASTER_NODE_PRIVATE_IPS" | tr ',' ' ' | xargs -n1 | sed 's/$/:7001/' | xargs)
+MASTER_ADDRS=$(echo "$MASTER_NODE_PRIVATE_IP_LIST" | tr ',' ' ' | xargs -n1 | sed 's/$/:7001/' | xargs)
 echo "MASTER_ADDRS=\"$MASTER_ADDRS\"" > /etc/openvidu/media-health.env
 
 # Mark installation as complete
