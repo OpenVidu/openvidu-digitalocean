@@ -1764,6 +1764,8 @@ while true; do
 done
 EOF
 
+  # user_data carries the media mode (fixed or autoscaling), never the count: a count there
+  # would replace every Droplet whenever fixedNumberOfMediaNodes changes.
   media_replace_script_media = <<-EOF
 #!/bin/bash
 # Requests the replacement of THIS media node, keeping the media-node count.
@@ -1775,7 +1777,7 @@ EOF
 REASON="$1"
 DO_TOKEN="${var.doToken}"
 UNHEALTHY_TAG="${digitalocean_tag.unhealthy_tag.name}"
-FIXED_NODES=${var.fixedNumberOfMediaNodes}
+FIXED_NODES=${var.fixedNumberOfMediaNodes > 0 ? 1 : 0}
 IMAGE=ubuntu-24-04-x64
 API=https://api.digitalocean.com/v2
 
@@ -2012,7 +2014,7 @@ mkdir -p /var/lib/openvidu-media-health
 touch /var/lib/openvidu-media-health/installed
 
 # Tag watcher cron: check every minute if this node should be drained
-if [ "${var.fixedNumberOfMediaNodes}" -eq 0 ]; then
+if [ "${var.fixedNumberOfMediaNodes > 0 ? 1 : 0}" -eq 0 ]; then
 echo "*/2 * * * * root /usr/local/bin/tag_watcher.sh >> /var/log/tag_watcher.log 2>&1" > /etc/cron.d/tag-watcher
 chmod 644 /etc/cron.d/tag-watcher
 fi
