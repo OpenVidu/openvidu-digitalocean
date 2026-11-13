@@ -586,7 +586,7 @@ CONFIG_S3_EOF
   lsb-release \
   openssl
 
-  AWS_CLI_VERSION=2.39.6
+  AWS_CLI_VERSION=2.39.7
   # Install aws-cli
   curl "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-$${AWS_CLI_VERSION}.zip" -o "awscliv2.zip"
   unzip -qq awscliv2.zip
