@@ -1775,7 +1775,7 @@ CONFIG_S3_EOF
   lsb-release \
   openssl
 
-  AWS_CLI_VERSION=2.39.6
+  AWS_CLI_VERSION=2.39.7
   DOCTL_VERSION=1.186.0
 
   install_aws_cli() {
@@ -2380,7 +2380,7 @@ apt-get update && apt-get install -y \
   lsb-release \
   openssl
 
-AWS_CLI_VERSION=2.39.6
+AWS_CLI_VERSION=2.39.7
 DOCTL_VERSION=1.186.0
 
 install_aws_cli() {
