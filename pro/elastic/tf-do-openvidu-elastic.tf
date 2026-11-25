@@ -4,14 +4,24 @@ resource "random_id" "bucket_suffix" { byte_length = 5 }
 
 # Per-deployment /24 so multiple elastic/HA stacks can coexist in the same account+region
 # (parallel runs). Auto-derived from stackName; override with var.vpcIpRange if needed.
+# Derived inside 10.64.0.0-10.99.255.0, which stays clear of what DigitalOcean reserves in
+# each region (10.10 to 10.20 and 10.46 to 10.53 at the time of writing; new regions take
+# the next ones up, and 10.54 to 10.63 are left for them) and in all of them (10.229.0.0/16,
+# 10.244.0.0/16, 10.245.0.0/16 and 10.246.0.0/24), and of each region's default VPC, a
+# 10.1xx.0.0/20: the account refuses a VPC that overlaps any of them.
 locals {
-  vpc_ip_range = var.vpcIpRange != "" ? var.vpcIpRange : "10.${parseint(substr(sha256(var.stackName), 0, 2), 16)}.${parseint(substr(sha256(var.stackName), 2, 2), 16)}.0/24"
+  vpc_ip_range = var.vpcIpRange != "" ? var.vpcIpRange : "10.${64 + parseint(substr(sha256(var.stackName), 0, 2), 16) % 36}.${parseint(substr(sha256(var.stackName), 2, 2), 16)}.0/24"
 }
 
 resource "digitalocean_vpc" "openvidu_vpc" {
   name     = "${var.stackName}-vpc"
   region   = var.region
   ip_range = local.vpc_ip_range
+  # A VPC's range cannot change in place: a different one (an older derivation, a
+  # vpcIpRange given later) would replace the VPC and everything in it.
+  lifecycle {
+    ignore_changes = [ip_range]
+  }
 }
 
 resource "digitalocean_tag" "media_node_tag" {
