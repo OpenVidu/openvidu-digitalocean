@@ -1282,6 +1282,7 @@ EOF
 
   autoscaler_function_code = <<-PYEOF
 import base64
+import calendar
 import json
 import os
 import random
@@ -1304,6 +1305,10 @@ MIN_NODES     = int("${var.minNumberOfMediaNodes}")
 MAX_NODES     = int("${var.maxNumberOfMediaNodes}")
 INITIAL_NODES = int("${var.initialNumberOfMediaNodes}")
 TARGET_CPU    = float("${var.scaleTargetCPU}")
+# A droplet younger than this may have no CPU data yet. cpu() needs two distinct samples in its
+# 4-minute window, so a new node usually reports from the next run on; 900 s bounds the wait and
+# covers a slow start.
+NEW_NODE_GRACE_SEC = 900
 USER_DATA     = base64.b64decode("${base64encode(local.user_data_media)}").decode()
 
 API = "https://api.digitalocean.com/v2"
@@ -1352,6 +1357,15 @@ def list_nodes():
         log(f"  droplet id={d['id']} name={d['name']} status={d['status']} "
             f"region={d.get('region',{}).get('slug','?')} created={d.get('created_at','?')}")
     return nodes
+
+def node_age_sec(d):
+    """Seconds since the droplet was created. An unreadable created_at counts as old, so
+    it never holds a decision on its own."""
+    try:
+        created = calendar.timegm(time.strptime(d.get("created_at", ""), "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        return float("inf")
+    return time.time() - created
 
 def cpu(did, name):
     now = int(time.time())
@@ -1579,7 +1593,7 @@ def replace_unhealthy():
     return True
 
 def main(args):
-    """DO Functions entry point — invoked every 5 minutes by scheduled trigger."""
+    """DO Functions entry point — invoked every 4 minutes by the scheduled trigger."""
     log("=" * 60)
     log(f"Autoscaler invoked | stack={STACK_NAME} region={REGION}")
     log(f"Config: min={MIN_NODES} initial={INITIAL_NODES} max={MAX_NODES} target_cpu={TARGET_CPU}%")
@@ -1655,12 +1669,24 @@ def main(args):
         # Scale in
         thr = TARGET_CPU
         log(f"Scale-in threshold: {thr:.2f}%")
-        do_in = (avg < thr and n > MIN_NODES) or (n > MAX_NODES)
+        # A node without CPU data counts neither in the average nor in the choice below, and with
+        # no data from any node there is no CPU scale-in at all: an average of nothing is not a
+        # low CPU. Right after a scale-out the new droplet has none yet, so a scale-in now would
+        # drain the node that does report, which is the loaded one: the CPU scale-in waits until
+        # every new node reports. Above MAX_NODES the count-based scale-in still runs, and it
+        # drains a new node first, the one that has had the least time to take sessions.
+        warming = [d for d in nodes if d["id"] not in cmap and node_age_sec(d) < NEW_NODE_GRACE_SEC]
+        cpu_in = bool(cmap) and avg < thr and n > MIN_NODES
+        do_in = (cpu_in and not warming) or (n > MAX_NODES)
 
         if do_in:
             log(f"DECISION: scale-in (avg={avg:.2f}% < thr={thr:.2f}% or n={n} > max={MAX_NODES})")
-            # Pick the node with lowest CPU usage
-            if cmap:
+            # A new node first (only above MAX_NODES, see above), else the lowest CPU usage
+            if warming:
+                tid   = warming[0]["id"]
+                tname = warming[0]["name"]
+                tcpu  = None
+            elif cmap:
                 tid = min(cmap, key=lambda x: cmap[x][0])
                 tname = cmap[tid][1]
                 tcpu  = cmap[tid][0]
@@ -1669,13 +1695,20 @@ def main(args):
                 tname = nodes[0]["name"] if nodes else "?"
                 tcpu  = 0.0
             if tid:
-                log(f"  Selected node to drain: {tid} ({tname}) CPU={tcpu}%")
+                shown = "no data yet" if tcpu is None else f"{tcpu}%"
+                log(f"  Selected node to drain: {tid} ({tname}) CPU={shown}")
                 tag_res(tid, DRAINING_TAG)
                 untag_res(tid, MEDIA_TAG)
                 result["action"] = "scale-in"
                 result["drained_node"] = {"id": tid, "name": tname, "cpu": tcpu}
             else:
                 log("  No node available to drain")
+        elif cpu_in:
+            names = ", ".join(d["name"] for d in warming)
+            log(f"DECISION: hold (avg={avg:.2f}% < thr={thr:.2f}%, but {len(warming)} new node(s) "
+                f"without CPU data yet: {names}; scale-in waits until they report)")
+        elif not cmap and nodes:
+            log(f"DECISION: hold (no CPU data for any of the {n} node(s); no CPU scale-in without data)")
         else:
             log(f"DECISION: hold (avg={avg:.2f}% within range, nodes={n} within min/max)")
 
