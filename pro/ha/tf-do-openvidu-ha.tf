@@ -723,7 +723,7 @@ locals {
 #!/bin/bash -x
 set -e
 
-OPENVIDU_VERSION=3.10.0
+OPENVIDU_VERSION=main
 DOMAIN=
 
 # Create counter file for tracking script executions
